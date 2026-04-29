@@ -1,0 +1,7 @@
+# Minimal Supabase project config used by the CLI.
+# Run `supabase init` in this folder if you prefer the CLI's full template.
+
+project_id = "casa-class"
+
+[functions.summarize]
+verify_jwt = false

@@ -1,0 +1,68 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  @apply font-sans text-ink bg-soft-dawn;
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer components {
+  .card {
+    @apply bg-white rounded-2xl shadow-warm p-5 border border-sunrise-100;
+  }
+  .card-tint {
+    @apply rounded-2xl shadow-warm p-5 border border-sunrise-200 bg-sunrise-50;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-full px-4 py-2
+           font-medium transition active:scale-[.98] disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-sunrise-500 text-white hover:bg-sunrise-600 shadow-warm;
+  }
+  .btn-secondary {
+    @apply btn bg-white text-sunrise-700 border border-sunrise-200 hover:bg-sunrise-50;
+  }
+  .btn-ghost {
+    @apply btn text-sunrise-700 hover:bg-sunrise-100;
+  }
+  .btn-danger {
+    @apply btn bg-white text-red-600 border border-red-200 hover:bg-red-50;
+  }
+  .input {
+    @apply w-full rounded-xl border border-sunrise-200 bg-white px-3 py-2
+           focus:outline-none focus:ring-2 focus:ring-sunrise-300 focus:border-sunrise-300;
+  }
+  .label {
+    @apply block text-sm font-medium text-ink/80 mb-1;
+  }
+  .pill {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium;
+  }
+  .pill-sun  { @apply pill bg-sunrise-100 text-sunrise-700; }
+  .pill-sky  { @apply pill bg-sky-100 text-sky-500; }
+  .pill-coral{ @apply pill bg-orange-100 text-coral-500; }
+}
+
+/* Subtle sunrise glow at the top of the viewport */
+.morning-bg::before {
+  content: '';
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 280px;
+  background: linear-gradient(180deg, rgba(253, 224, 71, 0.35) 0%, rgba(253, 224, 71, 0) 80%);
+  pointer-events: none;
+  z-index: 0;
+}
