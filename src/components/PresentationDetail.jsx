@@ -75,7 +75,7 @@ export default function PresentationDetail() {
 
         <div className="grid sm:grid-cols-2 gap-3 mt-3">
           <div>
-            <label className="label">Presenter</label>
+            <label className="label">Primary presenter</label>
             <select
               className="input"
               value={pres.speaker_id ?? ''}
@@ -105,6 +105,15 @@ export default function PresentationDetail() {
               <option value="completed">Completed</option>
               <option value="cancelled">Cancelled</option>
             </select>
+          </div>
+          <div className="sm:col-span-2">
+            <label className="label">Co-presenters</label>
+            <CoPresentersEditor
+              speakers={speakers}
+              primaryId={pres.speaker_id}
+              coIds={pres.co_speaker_ids ?? []}
+              onChange={(ids) => patch({ co_speaker_ids: ids })}
+            />
           </div>
         </div>
       </section>
@@ -357,5 +366,53 @@ function QuestionsCard({ presentationId, questions }) {
         ))}
       </ul>
     </section>
+  )
+}
+
+function CoPresentersEditor({ speakers, primaryId, coIds, onChange }) {
+  const co = coIds.map(id => speakers.find(s => s.id === id)).filter(Boolean)
+  const available = speakers.filter(s => s.id !== primaryId && !coIds.includes(s.id))
+
+  function add(id) {
+    if (!id) return
+    onChange([...coIds, id])
+  }
+  function remove(id) {
+    onChange(coIds.filter(x => x !== id))
+  }
+
+  return (
+    <div>
+      <div className="flex flex-wrap gap-1 mb-2 min-h-[32px] items-center">
+        {co.length === 0 && (
+          <span className="text-xs text-ink/40">No co-presenters yet.</span>
+        )}
+        {co.map(s => (
+          <span key={s.id} className="pill-sky inline-flex items-center gap-1 pl-3 pr-1 py-1">
+            {s.name}{s.is_regular ? '' : ' (guest)'}
+            <button
+              type="button"
+              onClick={() => remove(s.id)}
+              className="w-5 h-5 rounded-full hover:bg-sky-200 grid place-items-center"
+              title="Remove"
+            >×</button>
+          </span>
+        ))}
+      </div>
+      {available.length > 0 && (
+        <select
+          className="input max-w-xs"
+          value=""
+          onChange={(e) => { add(e.target.value); e.target.value = '' }}
+        >
+          <option value="">+ Add a co-presenter…</option>
+          {available.map(s => (
+            <option key={s.id} value={s.id}>
+              {s.name}{s.is_regular ? '' : ' (guest)'}
+            </option>
+          ))}
+        </select>
+      )}
+    </div>
   )
 }

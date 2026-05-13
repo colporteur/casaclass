@@ -18,7 +18,10 @@ export default function History() {
   const filtered = q
     ? past.filter(p => {
         const sp = speakers.find(s => s.id === p.speaker_id)
-        return [p.topic_title, p.topic_description, p.summary, sp?.name]
+        const coNames = (p.co_speaker_ids ?? [])
+          .map(id => speakers.find(s => s.id === id)?.name)
+          .filter(Boolean)
+        return [p.topic_title, p.topic_description, p.summary, sp?.name, ...coNames]
           .filter(Boolean)
           .some(s => s.toLowerCase().includes(q))
       })
@@ -47,6 +50,9 @@ export default function History() {
         )}
         {filtered.map(p => {
           const sp = speakers.find(s => s.id === p.speaker_id)
+          const coNames = (p.co_speaker_ids ?? [])
+            .map(id => speakers.find(s => s.id === id)?.name)
+            .filter(Boolean)
           return (
             <li key={p.id} className="card hover:shadow-lg transition">
               <Link to={`/presentation/${p.id}`} className="block">
@@ -56,7 +62,10 @@ export default function History() {
                     <h3 className="font-display text-xl mt-0.5">
                       {p.topic_title || <span className="text-ink/40">Untitled</span>}
                     </h3>
-                    <div className="text-sm text-ink/70">{sp?.name || 'Speaker not recorded'}</div>
+                    <div className="text-sm text-ink/70">
+                      {sp?.name || 'Speaker not recorded'}
+                      {coNames.length > 0 && <span className="text-ink/60"> with {coNames.join(', ')}</span>}
+                    </div>
                   </div>
                   <div className="flex items-center gap-2">
                     {p.summary && <span className="pill-sun">summary</span>}

@@ -13,6 +13,11 @@ export default function Dashboard() {
     .slice(0, 5)
   const next = upcoming[0]
   const nextSpeaker = next ? speakers.find(s => s.id === next.speaker_id) : null
+  const nextCoNames = next
+    ? (next.co_speaker_ids ?? [])
+        .map(id => speakers.find(s => s.id === id)?.name)
+        .filter(Boolean)
+    : []
 
   // If there's no presentation row for the next Wednesday, hint at it.
   const nextWed = upcomingWednesdays(1)[0]
@@ -34,6 +39,9 @@ export default function Dashboard() {
               </h1>
               <div className="mt-2 text-ink/70">
                 <span className="font-medium">{nextSpeaker?.name || 'Speaker TBD'}</span>
+                {nextCoNames.length > 0 && (
+                  <span className="text-ink/60"> with {nextCoNames.join(', ')}</span>
+                )}
                 {' · '}
                 {formatLong(next.scheduled_date)}
               </div>
@@ -72,6 +80,7 @@ export default function Dashboard() {
           <ul className="divide-y divide-sunrise-100">
             {upcoming.map(p => {
               const sp = speakers.find(s => s.id === p.speaker_id)
+              const extras = (p.co_speaker_ids ?? []).filter(id => speakers.some(s => s.id === id)).length
               return (
                 <li key={p.id} className="py-2 flex items-center justify-between gap-3">
                   <div className="min-w-0">
@@ -80,6 +89,7 @@ export default function Dashboard() {
                     </div>
                     <div className="text-xs text-ink/60">
                       {formatLong(p.scheduled_date)} · {sp?.name || 'Speaker TBD'}
+                      {extras > 0 && ` + ${extras} more`}
                     </div>
                   </div>
                   <Link to={`/presentation/${p.id}`} className="btn-ghost text-sm">Open</Link>
