@@ -10,7 +10,9 @@ export default function History() {
 
   const today = todayISO()
   const past = useMemo(
-    () => presentations.filter(p => p.scheduled_date < today),
+    // Show everything dated before today, OR anything explicitly marked completed
+    // (so today's session moves to History as soon as the transcript is saved).
+    () => presentations.filter(p => p.scheduled_date < today || p.status === 'completed'),
     [presentations, today]
   )
 

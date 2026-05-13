@@ -9,7 +9,7 @@ export default function Dashboard() {
 
   const today = todayISO()
   const upcoming = presentations
-    .filter(p => p.scheduled_date >= today)
+    .filter(p => p.scheduled_date >= today && p.status !== 'completed' && p.status !== 'cancelled')
     .slice(0, 5)
   const next = upcoming[0]
   const nextSpeaker = next ? speakers.find(s => s.id === next.speaker_id) : null

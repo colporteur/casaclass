@@ -3,7 +3,7 @@ import { Link, useParams, useNavigate } from 'react-router-dom'
 import { supabase, SUMMARIZE_FUNCTION_URL, SUPABASE_ANON_KEY } from '../lib/supabase.js'
 import { useTable } from '../hooks/useTable.js'
 import { getDisplayName } from '../lib/identity.js'
-import { formatLong } from '../lib/dates.js'
+import { formatLong, todayISO } from '../lib/dates.js'
 
 export default function PresentationDetail() {
   const { id } = useParams()
@@ -140,7 +140,14 @@ function TranscriptCard({ pres, onChange }) {
 
   async function save() {
     setSaving(true); setSaved(false)
-    await onChange({ transcript: text || null })
+    const trimmed = (text || '').trim()
+    const fields = { transcript: trimmed || null }
+    // If a real transcript is being saved on or before today and the program is
+    // still in 'scheduled' status, auto-mark it as 'completed' so it moves to History.
+    if (trimmed && pres.scheduled_date <= todayISO() && pres.status === 'scheduled') {
+      fields.status = 'completed'
+    }
+    await onChange(fields)
     setSaving(false); setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
@@ -181,6 +188,39 @@ function TranscriptCard({ pres, onChange }) {
 function SummaryCard({ pres, onSaved }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(pres.summary ?? '')
+  const [savingEdit, setSavingEdit] = useState(false)
+
+  // Keep the draft in sync with the saved summary whenever we're NOT actively editing.
+  useEffect(() => {
+    if (!editing) setDraft(pres.summary ?? '')
+  }, [pres.summary, editing])
+
+  function startEdit() {
+    setDraft(pres.summary ?? '')
+    setEditing(true)
+    setError('')
+  }
+
+  function cancelEdit() {
+    setEditing(false)
+    setDraft(pres.summary ?? '')
+    setError('')
+  }
+
+  async function saveEdit() {
+    setSavingEdit(true); setError('')
+    const next = draft.trim()
+    const { error } = await supabase
+      .from('presentations')
+      .update({ summary: next || null })
+      .eq('id', pres.id)
+    setSavingEdit(false)
+    if (error) { setError(error.message); return }
+    await onSaved()
+    setEditing(false)
+  }
 
   async function summarize() {
     setBusy(true); setError('')
@@ -224,7 +264,7 @@ function SummaryCard({ pres, onSaved }) {
 
   return (
     <section className="card">
-      <div className="flex items-center justify-between gap-2 mb-2">
+      <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
         <div>
           <h2 className="font-display text-xl">AI summary</h2>
           {pres.summary_generated_at && (
@@ -233,14 +273,38 @@ function SummaryCard({ pres, onSaved }) {
             </div>
           )}
         </div>
-        <button className="btn-primary" onClick={summarize} disabled={busy}>
-          {busy ? 'Summarizing…' : pres.summary ? 'Re-generate' : 'Generate summary'}
-        </button>
+        <div className="flex items-center gap-2">
+          {editing ? (
+            <>
+              <button className="btn-secondary" onClick={cancelEdit} disabled={savingEdit}>Cancel</button>
+              <button className="btn-primary" onClick={saveEdit} disabled={savingEdit}>
+                {savingEdit ? 'Saving…' : 'Save edits'}
+              </button>
+            </>
+          ) : (
+            <>
+              {pres.summary && (
+                <button className="btn-secondary" onClick={startEdit}>Edit</button>
+              )}
+              <button className="btn-primary" onClick={summarize} disabled={busy}>
+                {busy ? 'Summarizing…' : pres.summary ? 'Re-generate' : 'Generate summary'}
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {error && <div className="text-sm text-red-600 mb-2">{error}</div>}
 
-      {pres.summary ? (
+      {editing ? (
+        <textarea
+          className="input text-sm leading-relaxed"
+          rows={Math.max(8, draft.split('\n').length + 1)}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          autoFocus
+        />
+      ) : pres.summary ? (
         <div className="prose prose-sm max-w-none whitespace-pre-wrap text-ink/90">
           {pres.summary}
         </div>
@@ -414,5 +478,86 @@ function CoPresentersEditor({ speakers, primaryId, coIds, onChange }) {
         </select>
       )}
     </div>
+  )
+}
+      <form onSubmit={add} className="flex gap-2 mb-3">
+        <input className="input" placeholder="What's on your mind?" value={q} onChange={e => setQ(e.target.value)} />
+        <button className="btn-primary">Log question</button>
+      </form>
+      <ul className="divide-y divide-sunrise-100">
+        {questions.length === 0 && (
+          <li className="py-4 text-sm text-ink/50">No questions yet — they'll appear here as people add them.</li>
+        )}
+        {questions.map(q => (
+          <li key={q.id} className="py-2 flex items-start gap-3">
+            <div className="flex-1">
+              <div className="text-sm">{q.question}</div>
+              <div className="text-[11px] text-ink/50 mt-0.5">
+                {q.asked_by ? `from ${q.asked_by}` : 'anonymous'} · {new Date(q.created_at).toLocaleString()}
+              </div>
+            </div>
+            <button className="btn-ghost text-xs" onClick={() => remove(q.id)}>Remove</button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
+function CoPresentersEditor({ speakers, primaryId, coIds, onChange }) {
+  const co = coIds.map(id => speakers.find(s => s.id === id)).filter(Boolean)
+  const available = speakers.filter(s => s.id !== primaryId && !coIds.includes(s.id))
+
+  function add(id) {
+    if (!id) return
+    onChange([...coIds, id])
+  }
+  function remove(id) {
+    onChange(coIds.filter(x => x !== id))
+  }
+
+  return (
+    <div>
+      <div className="flex flex-wrap gap-1 mb-2 min-h-[32px] items-center">
+        {co.length === 0 && (
+          <span className="text-xs text-ink/40">No co-presenters yet.</span>
+        )}
+        {co.map(s => (
+          <span key={s.id} className="pill-sky inline-flex items-center gap-1 pl-3 pr-1 py-1">
+            {s.name}{s.is_regular ? '' : ' (guest)'}
+            <button
+              type="button"
+              onClick={() => remove(s.id)}
+              className="w-5 h-5 rounded-full hover:bg-sky-200 grid place-items-center"
+              title="Remove"
+            >×</button>
+          </span>
+        ))}
+      </div>
+      {available.length > 0 && (
+        <select
+          className="input max-w-xs"
+          value=""
+          onChange={(e) => { add(e.target.value); e.target.value = '' }}
+        >
+          <option value="">+ Add a co-presenter…</option>
+          {available.map(s => (
+            <option key={s.id} value={s.id}>
+              {s.name}{s.is_regular ? '' : ' (guest)'}
+            </option>
+          ))}
+        </select>
+      )}
+    </div>
+  )
+}
+' : ' (guest)'}
+            </option>
+          ))}
+        </select>
+      )}
+    </div>
+  )
+}
   )
 }
