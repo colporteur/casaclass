@@ -26,7 +26,6 @@ export default function PresentationDetail() {
     setLoading(false)
   }
 
-  // Realtime: keep the local presentation in sync.
   useEffect(() => {
     const ch = supabase
       .channel(`pres:${id}`)
@@ -142,8 +141,6 @@ function TranscriptCard({ pres, onChange }) {
     setSaving(true); setSaved(false)
     const trimmed = (text || '').trim()
     const fields = { transcript: trimmed || null }
-    // If a real transcript is being saved on or before today and the program is
-    // still in 'scheduled' status, auto-mark it as 'completed' so it moves to History.
     if (trimmed && pres.scheduled_date <= todayISO() && pres.status === 'scheduled') {
       fields.status = 'completed'
     }
@@ -192,7 +189,6 @@ function SummaryCard({ pres, onSaved }) {
   const [draft, setDraft] = useState(pres.summary ?? '')
   const [savingEdit, setSavingEdit] = useState(false)
 
-  // Keep the draft in sync with the saved summary whenever we're NOT actively editing.
   useEffect(() => {
     if (!editing) setDraft(pres.summary ?? '')
   }, [pres.summary, editing])
@@ -233,7 +229,6 @@ function SummaryCard({ pres, onSaved }) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          // Supabase Edge Functions require this header.
           'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
           'apikey': SUPABASE_ANON_KEY
         },
@@ -417,15 +412,15 @@ function QuestionsCard({ presentationId, questions }) {
         {questions.length === 0 && (
           <li className="py-4 text-sm text-ink/50">No questions yet — they'll appear here as people add them.</li>
         )}
-        {questions.map(q => (
-          <li key={q.id} className="py-2 flex items-start gap-3">
+        {questions.map(qq => (
+          <li key={qq.id} className="py-2 flex items-start gap-3">
             <div className="flex-1">
-              <div className="text-sm">{q.question}</div>
+              <div className="text-sm">{qq.question}</div>
               <div className="text-[11px] text-ink/50 mt-0.5">
-                {q.asked_by ? `from ${q.asked_by}` : 'anonymous'} · {new Date(q.created_at).toLocaleString()}
+                {qq.asked_by ? `from ${qq.asked_by}` : 'anonymous'} · {new Date(qq.created_at).toLocaleString()}
               </div>
             </div>
-            <button className="btn-ghost text-xs" onClick={() => remove(q.id)}>Remove</button>
+            <button className="btn-ghost text-xs" onClick={() => remove(qq.id)}>Remove</button>
           </li>
         ))}
       </ul>
@@ -478,86 +473,5 @@ function CoPresentersEditor({ speakers, primaryId, coIds, onChange }) {
         </select>
       )}
     </div>
-  )
-}
-      <form onSubmit={add} className="flex gap-2 mb-3">
-        <input className="input" placeholder="What's on your mind?" value={q} onChange={e => setQ(e.target.value)} />
-        <button className="btn-primary">Log question</button>
-      </form>
-      <ul className="divide-y divide-sunrise-100">
-        {questions.length === 0 && (
-          <li className="py-4 text-sm text-ink/50">No questions yet — they'll appear here as people add them.</li>
-        )}
-        {questions.map(q => (
-          <li key={q.id} className="py-2 flex items-start gap-3">
-            <div className="flex-1">
-              <div className="text-sm">{q.question}</div>
-              <div className="text-[11px] text-ink/50 mt-0.5">
-                {q.asked_by ? `from ${q.asked_by}` : 'anonymous'} · {new Date(q.created_at).toLocaleString()}
-              </div>
-            </div>
-            <button className="btn-ghost text-xs" onClick={() => remove(q.id)}>Remove</button>
-          </li>
-        ))}
-      </ul>
-    </section>
-  )
-}
-
-function CoPresentersEditor({ speakers, primaryId, coIds, onChange }) {
-  const co = coIds.map(id => speakers.find(s => s.id === id)).filter(Boolean)
-  const available = speakers.filter(s => s.id !== primaryId && !coIds.includes(s.id))
-
-  function add(id) {
-    if (!id) return
-    onChange([...coIds, id])
-  }
-  function remove(id) {
-    onChange(coIds.filter(x => x !== id))
-  }
-
-  return (
-    <div>
-      <div className="flex flex-wrap gap-1 mb-2 min-h-[32px] items-center">
-        {co.length === 0 && (
-          <span className="text-xs text-ink/40">No co-presenters yet.</span>
-        )}
-        {co.map(s => (
-          <span key={s.id} className="pill-sky inline-flex items-center gap-1 pl-3 pr-1 py-1">
-            {s.name}{s.is_regular ? '' : ' (guest)'}
-            <button
-              type="button"
-              onClick={() => remove(s.id)}
-              className="w-5 h-5 rounded-full hover:bg-sky-200 grid place-items-center"
-              title="Remove"
-            >×</button>
-          </span>
-        ))}
-      </div>
-      {available.length > 0 && (
-        <select
-          className="input max-w-xs"
-          value=""
-          onChange={(e) => { add(e.target.value); e.target.value = '' }}
-        >
-          <option value="">+ Add a co-presenter…</option>
-          {available.map(s => (
-            <option key={s.id} value={s.id}>
-              {s.name}{s.is_regular ? '' : ' (guest)'}
-            </option>
-          ))}
-        </select>
-      )}
-    </div>
-  )
-}
-' : ' (guest)'}
-            </option>
-          ))}
-        </select>
-      )}
-    </div>
-  )
-}
   )
 }
