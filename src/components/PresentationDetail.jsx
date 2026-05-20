@@ -312,6 +312,16 @@ function SummaryCard({ pres, onSaved }) {
   )
 }
 
+// Ensure a URL has an http(s) scheme — accept inputs like "example.com" and
+// turn them into "https://example.com" so the browser doesn't treat them as
+// relative paths. Returns null for empty/whitespace input.
+function normalizeUrl(raw) {
+  const s = (raw || '').trim()
+  if (!s) return null
+  if (/^(https?:|mailto:|tel:)/i.test(s)) return s
+  return `https://${s}`
+}
+
 function ResourcesCard({ presentationId, resources }) {
   const [title, setTitle] = useState('')
   const [url, setUrl] = useState('')
@@ -324,7 +334,7 @@ function ResourcesCard({ presentationId, resources }) {
     const { error } = await supabase.from('resources').insert({
       presentation_id: presentationId,
       title: title.trim(),
-      url: url.trim() || null,
+      url: normalizeUrl(url),
       kind,
       notes: notes.trim() || null,
       added_by: getDisplayName() || null
@@ -365,7 +375,7 @@ function ResourcesCard({ presentationId, resources }) {
             <div className="flex-1 min-w-0">
               <div className="text-sm font-medium">
                 {r.url ? (
-                  <a href={r.url} target="_blank" rel="noreferrer" className="hover:underline text-sunrise-700">
+                  <a href={normalizeUrl(r.url)} target="_blank" rel="noreferrer" className="hover:underline text-sunrise-700">
                     {r.title}
                   </a>
                 ) : r.title}
