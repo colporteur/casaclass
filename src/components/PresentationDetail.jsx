@@ -4,7 +4,11 @@ import { supabase, SUMMARIZE_FUNCTION_URL, SUPABASE_ANON_KEY } from '../lib/supa
 import { useTable } from '../hooks/useTable.js'
 import { getDisplayName } from '../lib/identity.js'
 import { formatLong, todayISO } from '../lib/dates.js'
-import { LABEL_INFO, DISTORTION_INFO } from './ArgumentAnalyzer.jsx'
+import { LABEL_INFO, DISTORTION_INFO, ScoreCard } from './ArgumentAnalyzer.jsx'
+import {
+  verificationScore, distortionScore, fallaciesScore,
+  evidenceScore, consistencyScore, steelmanningScore
+} from '../lib/scoring.js'
 
 export default function PresentationDetail() {
   const { id } = useParams()
@@ -489,66 +493,47 @@ function CoPresentersEditor({ speakers, primaryId, coIds, onChange }) {
 }
 
 function AnalysisSummaryCard({ presentationId }) {
-  const { rows: facts } = useTable('extracted_facts', {
-    orderBy: 'ordinal',
-    filter: { presentation_id: presentationId }
-  })
+  const { rows: facts }     = useTable('extracted_facts',   { orderBy: 'ordinal', filter: { presentation_id: presentationId } })
+  const { rows: fallacies } = useTable('logical_fallacies', { orderBy: 'ordinal', filter: { presentation_id: presentationId } })
+  const { rows: issues }    = useTable('consistency_issues',{ orderBy: 'ordinal', filter: { presentation_id: presentationId } })
+  const [steelman, setSteelman] = useState(null)
 
-  if (facts.length === 0) return null
+  useEffect(() => {
+    let cancelled = false
+    supabase.from('steelman_assessments').select('*').eq('presentation_id', presentationId).maybeSingle()
+      .then(({ data }) => { if (!cancelled) setSteelman(data ?? null) })
+    return () => { cancelled = true }
+  }, [presentationId])
 
-  const labelCounts = {}
-  const distortionCounts = {}
-  for (const f of facts) {
-    if (f.label) labelCounts[f.label] = (labelCounts[f.label] || 0) + 1
-    if (f.distortion_label) distortionCounts[f.distortion_label] = (distortionCounts[f.distortion_label] || 0) + 1
+  if (facts.length === 0 && fallacies.length === 0 && issues.length === 0 && !steelman) return null
+
+  const scores = {
+    verification: verificationScore(facts),
+    distortion:   distortionScore(facts),
+    fallacies:    fallaciesScore(fallacies.length === 0 ? [] : fallacies),
+    evidence:     evidenceScore(facts),
+    consistency:  consistencyScore(issues.length === 0 ? [] : issues),
+    steelmanning: steelmanningScore(steelman)
   }
-  const verifiedTrue = labelCounts['true'] || 0
-  const undistorted = distortionCounts['undistorted'] || 0
+
+  const verifiedTrue = facts.filter(f => f.label === 'true').length
 
   return (
     <section className="card">
-      <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+      <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
         <div>
           <h2 className="font-display text-xl">Argument analysis</h2>
           <div className="text-xs text-ink/60">
             {facts.length} fact{facts.length === 1 ? '' : 's'} extracted
             {verifiedTrue > 0 && <>, {verifiedTrue} verified true</>}
-            {undistorted > 0 && <>, {undistorted} undistorted</>}.
+            {fallacies.length > 0 && <>, {fallacies.length} fallac{fallacies.length === 1 ? 'y' : 'ies'}</>}
+            {issues.length > 0 && <>, {issues.length} consistency issue{issues.length === 1 ? '' : 's'}</>}.
           </div>
         </div>
         <Link to="/analyzer" className="btn-secondary text-sm">Open in Analyzer</Link>
       </div>
 
-      <div className="mt-2">
-        <div className="text-[10px] uppercase tracking-wider text-ink/40 mb-1">Verification</div>
-        <div className="flex flex-wrap gap-2">
-          {Object.entries(LABEL_INFO).map(([k, info]) => (
-            labelCounts[k] ? (
-              <span key={k} className={`pill ${info.cls}`}>
-                {info.short}: {labelCounts[k]}
-              </span>
-            ) : null
-          ))}
-          {Object.keys(labelCounts).length === 0 && (
-            <span className="text-xs text-ink/50">Not yet verified.</span>
-          )}
-        </div>
-      </div>
-
-      {Object.keys(distortionCounts).length > 0 && (
-        <div className="mt-3">
-          <div className="text-[10px] uppercase tracking-wider text-ink/40 mb-1">Distortion (verified facts only)</div>
-          <div className="flex flex-wrap gap-2">
-            {Object.entries(DISTORTION_INFO).map(([k, info]) => (
-              distortionCounts[k] ? (
-                <span key={k} className={`pill ${info.cls}`}>
-                  {info.short}: {distortionCounts[k]}
-                </span>
-              ) : null
-            ))}
-          </div>
-        </div>
-      )}
+      <ScoreCard scores={scores} compact />
     </section>
   )
 }

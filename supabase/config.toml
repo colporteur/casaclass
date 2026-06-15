@@ -14,3 +14,15 @@ verify_jwt = false
 
 [functions.analyze-distortion]
 verify_jwt = false
+
+[functions.detect-fallacies]
+verify_jwt = false
+
+[functions.assess-evidence]
+verify_jwt = false
+
+[functions.check-consistency]
+verify_jwt = false
+
+[functions.assess-steelman]
+verify_jwt = false
