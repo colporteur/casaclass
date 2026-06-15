@@ -1,47 +1,38 @@
-// Casa Class — booklet PDF generator.
+// Casa Class - booklet PDF generator.
 // Produces a print-ready PDF on 11" x 8.5" landscape sheets, imposed for
 // saddle-stitch single-fold booklets (4 booklet pages per physical sheet).
 // Booklet pages are 5.5" x 8.5" portrait.
+//
+// Layout: each program with an AI summary occupies as many booklet pages as
+// its content needs. The first page carries the header (date, title, speaker);
+// continuation pages show a small "continued" marker. The full booklet is
+// padded with blanks to a multiple of 4 pages.
 
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 
 const PT_PER_IN = 72
-const PAGE_W  = 5.5 * PT_PER_IN   // 396 — half-sheet width
-const PAGE_H  = 8.5 * PT_PER_IN   // 612 — half-sheet height (also full sheet height)
-const SHEET_W = 11  * PT_PER_IN   // 792 — full sheet width (landscape)
-const SHEET_H = 8.5 * PT_PER_IN   // 612
-const MARGIN  = 0.5 * PT_PER_IN   // 36
+const PAGE_W  = 5.5 * PT_PER_IN
+const PAGE_H  = 8.5 * PT_PER_IN
+const SHEET_W = 11  * PT_PER_IN
+const SHEET_H = 8.5 * PT_PER_IN
+const MARGIN  = 0.5 * PT_PER_IN
 
-// Colors (RGB values 0..1)
+// Colors
 const INK    = rgb(0.12, 0.16, 0.22)
 const MUTED  = rgb(0.45, 0.45, 0.50)
-const ACCENT = rgb(0.96, 0.62, 0.04)  // sunrise gold
+const ACCENT = rgb(0.96, 0.62, 0.04)
+
+// Reserved bottom strip for page number (so it never collides with content)
+const PAGE_NUM_RESERVE = 28
+// Top padding before any header content
+const TOP_PAD = 12
+// Total vertical area usable for layout (between top of page-num and top pad)
+const FULL_AVAIL = PAGE_H - 2 * MARGIN - PAGE_NUM_RESERVE - TOP_PAD
 
 // ---------------------------------------------------------------------------
-// Date helpers
+// Text + date helpers
 // ---------------------------------------------------------------------------
 
-function formatDateLong(iso) {
-  if (!iso) return ''
-  const d = new Date(iso + 'T00:00:00')
-  return d.toLocaleDateString('en-US', {
-    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
-  })
-}
-
-function formatDateShort(iso) {
-  if (!iso) return ''
-  const d = new Date(iso + 'T00:00:00')
-  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
-}
-
-// ---------------------------------------------------------------------------
-// Text helpers
-// ---------------------------------------------------------------------------
-
-// Strip characters that pdf-lib's WinAnsi encoding can't represent (e.g.
-// emoji, smart-quote artifacts, em-dashes). For safety we substitute common
-// ones and drop the rest.
 function clean(text) {
   if (text == null) return ''
   return String(text)
@@ -52,8 +43,19 @@ function clean(text) {
     .replace(/…/g, '...')
     .replace(/•/g, '*')
     .replace(/ /g, ' ')
-    // Drop anything outside the printable WinAnsi range, just in case.
     .replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\xFF]/g, '')
+}
+
+function formatDateLong(iso) {
+  if (!iso) return ''
+  const d = new Date(iso + 'T00:00:00')
+  return d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+}
+
+function formatDateShort(iso) {
+  if (!iso) return ''
+  const d = new Date(iso + 'T00:00:00')
+  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
 function wrapText(text, font, size, maxWidth) {
@@ -88,33 +90,187 @@ function truncateToWidth(text, font, size, maxWidth) {
   return s + '...'
 }
 
-function drawWrapped(page, text, opts) {
-  const { x, font, size, lineHeight, color = INK, maxWidth, minY = 0 } = opts
-  let y = opts.y
-  const lines = wrapText(text, font, size, maxWidth)
-  for (const line of lines) {
-    if (y < minY) return { y, truncated: true }
-    if (line) page.drawText(line, { x, y, font, size, color })
-    y -= lineHeight
-  }
-  return { y, truncated: false }
-}
-
 function drawCentered(page, text, opts) {
   const { y, font, size, color = INK, cx } = opts
-  const w = font.widthOfTextAtSize(clean(text), size)
-  page.drawText(clean(text), { x: cx - w / 2, y, font, size, color })
+  const t = clean(text)
+  const w = font.widthOfTextAtSize(t, size)
+  page.drawText(t, { x: cx - w / 2, y, font, size, color })
 }
 
 // ---------------------------------------------------------------------------
-// Booklet-page renderers. Each draws into a 5.5" x 8.5" slot whose
-// bottom-left corner on the physical sheet is at (ox, oy).
+// Item-based content model. Items are drawn in order, each consuming a known
+// vertical amount. Chunking splits the items across pages by capacity.
 // ---------------------------------------------------------------------------
+
+function buildPresentationItems(pres, resources, fonts) {
+  const innerW = PAGE_W - 2 * MARGIN
+  const items = []
+
+  // Summary lines
+  const summaryLines = wrapText(pres.summary || '', fonts.body, 9.5, innerW)
+  for (const line of summaryLines) {
+    if (line === '') {
+      items.push({ type: 'space', height: 6 })
+    } else {
+      items.push({ type: 'text', text: line, font: 'body', size: 9.5, lineHeight: 13.5, color: INK })
+    }
+  }
+
+  // Resources block
+  if (resources && resources.length) {
+    items.push({ type: 'space', height: 10 })
+    items.push({ type: 'text', text: 'Recommended resources', font: 'bold', size: 9, lineHeight: 13, color: ACCENT })
+    for (const r of resources) {
+      const labelParts = []
+      labelParts.push('- ' + (r.title || '(untitled)'))
+      if (r.url)  labelParts.push('(' + r.url + ')')
+      if (r.kind) labelParts.push('[' + r.kind + ']')
+      const label = labelParts.join(' ')
+      const lines = wrapText(label, fonts.body, 8.5, innerW)
+      for (const line of lines) {
+        items.push({ type: 'text', text: line, font: 'body', size: 8.5, lineHeight: 11, color: INK })
+      }
+    }
+  }
+
+  return items
+}
+
+function firstPageHeaderHeight(pres, fonts) {
+  const innerW = PAGE_W - 2 * MARGIN
+  const titleLines = wrapText(pres.topic_title || '(Untitled)', fonts.serifBold, 17, innerW)
+  // date(18) + title(nLines*20) + gap(2) + speaker(18) + divider(18)
+  return 18 + titleLines.length * 20 + 2 + 18 + 18
+}
+
+function continuationHeaderHeight() {
+  // "continued" line (small italic, 6 leading) + thin divider(14)
+  return 6 + 14
+}
+
+function chunkItems(items, firstCap, contCap) {
+  const chunks = []
+  let current = []
+  let used = 0
+  let cap = firstCap
+
+  for (const item of items) {
+    const h = item.type === 'space' ? item.height : item.lineHeight
+
+    // Drop a leading space on any chunk - looks ugly at the top of a page.
+    if (used === 0 && item.type === 'space') continue
+
+    if (used + h > cap && current.length > 0) {
+      chunks.push(current)
+      current = []
+      used = 0
+      cap = contCap
+      if (item.type === 'space') continue
+    }
+
+    current.push(item)
+    used += h
+  }
+  if (current.length > 0) chunks.push(current)
+  return chunks
+}
+
+function layoutPresentation(pres, resources, fonts) {
+  const firstCap = FULL_AVAIL - firstPageHeaderHeight(pres, fonts)
+  const contCap  = FULL_AVAIL - continuationHeaderHeight()
+  const items = buildPresentationItems(pres, resources, fonts)
+  // Safety: if we somehow chunked to zero (no content at all), still emit one chunk
+  const chunks = chunkItems(items, Math.max(50, firstCap), Math.max(50, contCap))
+  return chunks.length === 0 ? [[]] : chunks
+}
+
+// ---------------------------------------------------------------------------
+// Drawing
+// ---------------------------------------------------------------------------
+
+function drawItems(page, items, ox, fonts, startY) {
+  let y = startY
+  const innerL = ox + MARGIN
+  for (const item of items) {
+    if (item.type === 'space') {
+      y -= item.height
+      continue
+    }
+    if (item.type === 'text') {
+      const font = fonts[item.font] || fonts.body
+      if (item.text) {
+        page.drawText(item.text, { x: innerL, y, font, size: item.size, color: item.color })
+      }
+      y -= item.lineHeight
+    }
+  }
+  return y
+}
+
+function drawFirstPageHeader(page, ox, oy, pres, fonts, ctx) {
+  const innerL = ox + MARGIN
+  const innerR = ox + PAGE_W - MARGIN
+  const innerW = innerR - innerL
+  let y = oy + PAGE_H - MARGIN - TOP_PAD
+
+  // Date
+  page.drawText(formatDateLong(pres.scheduled_date), {
+    x: innerL, y, font: fonts.italic, size: 9, color: MUTED
+  })
+  y -= 18
+
+  // Title (may wrap multiple lines)
+  const titleSize = 17
+  const titleLines = wrapText(pres.topic_title || '(Untitled)', fonts.serifBold, titleSize, innerW)
+  for (const line of titleLines) {
+    page.drawText(line, { x: innerL, y, font: fonts.serifBold, size: titleSize, color: INK })
+    y -= titleSize + 3
+  }
+  y -= 2
+
+  // Speakers
+  const sp = ctx.speakers.find(s => s.id === pres.speaker_id)
+  const coNames = (pres.co_speaker_ids ?? [])
+    .map(id => ctx.speakers.find(s => s.id === id)?.name)
+    .filter(Boolean)
+  let speakerStr = sp?.name || 'Speaker not recorded'
+  if (coNames.length) speakerStr += ' with ' + coNames.join(', ')
+  page.drawText(clean(speakerStr), { x: innerL, y, font: fonts.body, size: 11, color: MUTED })
+  y -= 18
+
+  // Accent divider
+  page.drawLine({
+    start: { x: innerL, y }, end: { x: innerL + 40, y },
+    thickness: 1.2, color: ACCENT
+  })
+  y -= 18
+
+  return y
+}
+
+function drawContPageHeader(page, ox, oy, pres, fonts) {
+  const innerL = ox + MARGIN
+  const innerR = ox + PAGE_W - MARGIN
+  let y = oy + PAGE_H - MARGIN - TOP_PAD
+
+  const titleRoom = innerR - innerL - 80
+  const titleText = truncateToWidth(pres.topic_title || '(Untitled)', fonts.italic, 9, titleRoom)
+  page.drawText(titleText + ', continued', {
+    x: innerL, y, font: fonts.italic, size: 9, color: MUTED
+  })
+  y -= 6
+  page.drawLine({
+    start: { x: innerL, y }, end: { x: innerL + 30, y },
+    thickness: 0.5, color: ACCENT
+  })
+  y -= 14
+  return y
+}
 
 function drawCover(page, ox, oy, fonts, ctx) {
   const cx = ox + PAGE_W / 2
 
-  // Sunburst at top
+  // Sunburst
   const sunY = oy + PAGE_H - 1.6 * PT_PER_IN
   page.drawCircle({ x: cx, y: sunY, size: 22, color: ACCENT })
   for (let i = -2; i <= 2; i++) {
@@ -126,20 +282,17 @@ function drawCover(page, ox, oy, fonts, ctx) {
     })
   }
 
-  // Title
   let y = sunY - 1.4 * PT_PER_IN
   drawCentered(page, ctx.groupName, { y, font: fonts.serifBold, size: 34, cx })
   y -= 22
   drawCentered(page, 'Discussion Group', { y, font: fonts.serif, size: 16, color: MUTED, cx })
 
-  // Divider
   y -= 28
   page.drawLine({
     start: { x: cx - 70, y }, end: { x: cx + 70, y },
     thickness: 0.8, color: ACCENT
   })
 
-  // Subtitle + date range
   y -= 28
   drawCentered(page, 'AI summaries anthology', { y, font: fonts.serifItalic, size: 13, color: MUTED, cx })
 
@@ -148,7 +301,6 @@ function drawCover(page, ox, oy, fonts, ctx) {
     drawCentered(page, ctx.dateRange, { y, font: fonts.body, size: 11, color: MUTED, cx })
   }
 
-  // Footer note
   drawCentered(page, 'Compiled from the Casa Class app', {
     y: oy + MARGIN, font: fonts.italic, size: 8, color: MUTED, cx
   })
@@ -157,6 +309,8 @@ function drawCover(page, ox, oy, fonts, ctx) {
 function drawTOC(page, ox, oy, fonts, ctx) {
   const innerL = ox + MARGIN
   const innerR = ox + PAGE_W - MARGIN
+  const innerW = innerR - innerL
+  const cx = ox + PAGE_W / 2
   let y = oy + PAGE_H - MARGIN - 22
 
   page.drawText('Table of contents', { x: innerL, y, font: fonts.serifBold, size: 22, color: INK })
@@ -167,10 +321,15 @@ function drawTOC(page, ox, oy, fonts, ctx) {
   })
   y -= 22
 
+  // Reserve space at bottom for the notice + URL
+  const noticeText = 'For an online interactive guide and full session transcripts, visit:'
+  const noticeLines = wrapText(noticeText, fonts.body, 9, innerW - 24)
+  const urlSize = 10
+  const noticeBlockHeight = noticeLines.length * 12 + 4 + urlSize + 10  // notice lines + gap + url + small bottom pad
+  const bottomReserve = oy + MARGIN + noticeBlockHeight + 14
+
   const entrySize = 10.5
   const lineH = 17
-  const bottomReserve = oy + MARGIN + 36  // leave room for URL
-
   for (const e of ctx.tocEntries) {
     if (y < bottomReserve) break
 
@@ -191,94 +350,31 @@ function drawTOC(page, ox, oy, fonts, ctx) {
     y -= lineH
   }
 
-  // URL at bottom centered
-  const url = ctx.projectUrl
-  const urlSize = 9
-  const urlW = fonts.body.widthOfTextAtSize(url, urlSize)
-  const cx = ox + PAGE_W / 2
-  // Thin separator above the URL
+  // Bottom notice block, centered
+  // Thin separator above
+  const sepY = oy + MARGIN + noticeBlockHeight + 6
   page.drawLine({
-    start: { x: cx - 80, y: oy + MARGIN + 20 },
-    end:   { x: cx + 80, y: oy + MARGIN + 20 },
+    start: { x: cx - 80, y: sepY }, end: { x: cx + 80, y: sepY },
     thickness: 0.4, color: MUTED
   })
-  page.drawText(url, { x: cx - urlW / 2, y: oy + MARGIN + 6, font: fonts.body, size: urlSize, color: INK })
+
+  let ny = oy + MARGIN + noticeBlockHeight - 4
+  for (const line of noticeLines) {
+    drawCentered(page, line, { y: ny, font: fonts.body, size: 9, color: MUTED, cx })
+    ny -= 12
+  }
+  ny -= 4
+  drawCentered(page, ctx.projectUrl, { y: ny, font: fonts.bold, size: urlSize, color: INK, cx })
 }
 
-function drawPresentation(page, ox, oy, fonts, bp, ctx) {
-  const innerL = ox + MARGIN
-  const innerR = ox + PAGE_W - MARGIN
-  const innerW = innerR - innerL
-  let y = oy + PAGE_H - MARGIN - 12
+function drawPresentationStart(page, ox, oy, fonts, bp, ctx) {
+  const y = drawFirstPageHeader(page, ox, oy, bp.pres, fonts, ctx)
+  drawItems(page, bp.items, ox, fonts, y)
+}
 
-  const p = bp.pres
-
-  // Date (small, italic, muted)
-  page.drawText(formatDateLong(p.scheduled_date), {
-    x: innerL, y, font: fonts.italic, size: 9, color: MUTED
-  })
-  y -= 18
-
-  // Title (display serif)
-  const titleSize = 17
-  const titleLines = wrapText(p.topic_title || '(Untitled)', fonts.serifBold, titleSize, innerW)
-  for (const line of titleLines) {
-    page.drawText(line, { x: innerL, y, font: fonts.serifBold, size: titleSize, color: INK })
-    y -= titleSize + 3
-  }
-  y -= 2
-
-  // Speaker(s)
-  const sp = ctx.speakers.find(s => s.id === p.speaker_id)
-  const coNames = (p.co_speaker_ids ?? [])
-    .map(id => ctx.speakers.find(s => s.id === id)?.name)
-    .filter(Boolean)
-  let speakerStr = sp?.name || 'Speaker not recorded'
-  if (coNames.length) speakerStr += ' with ' + coNames.join(', ')
-  page.drawText(speakerStr, { x: innerL, y, font: fonts.body, size: 11, color: MUTED })
-  y -= 18
-
-  // Accent divider
-  page.drawLine({
-    start: { x: innerL, y }, end: { x: innerL + 40, y },
-    thickness: 1.2, color: ACCENT
-  })
-  y -= 18
-
-  // Summary body
-  const resources = ctx.resourcesForPres[p.id] || []
-  const resReserve = resources.length ? 22 + 14 * Math.min(resources.length, 4) : 0
-  const minY = oy + MARGIN + Math.max(28, resReserve)
-
-  const r = drawWrapped(page, p.summary, {
-    x: innerL, y, maxWidth: innerW,
-    font: fonts.body, size: 9.5, lineHeight: 13.5,
-    color: INK, minY
-  })
-  y = r.y
-
-  // Resources block at bottom
-  if (resources.length) {
-    y -= 6
-    if (y > oy + MARGIN + 18) {
-      page.drawText('Recommended resources', { x: innerL, y, font: fonts.bold, size: 9, color: ACCENT })
-      y -= 12
-      for (const res of resources) {
-        if (y < oy + MARGIN + 8) break
-        const labelParts = []
-        labelParts.push('- ' + clean(res.title || '(untitled)'))
-        if (res.url) labelParts.push('(' + clean(res.url) + ')')
-        if (res.kind) labelParts.push('[' + clean(res.kind) + ']')
-        const label = labelParts.join(' ')
-        const lines = wrapText(label, fonts.body, 8.5, innerW)
-        for (const line of lines) {
-          if (y < oy + MARGIN + 8) break
-          page.drawText(line, { x: innerL, y, font: fonts.body, size: 8.5, color: INK })
-          y -= 11
-        }
-      }
-    }
-  }
+function drawPresentationCont(page, ox, oy, fonts, bp, ctx) {
+  const y = drawContPageHeader(page, ox, oy, bp.pres, fonts)
+  drawItems(page, bp.items, ox, fonts, y)
 }
 
 function drawMissingList(page, ox, oy, fonts, items, ctx) {
@@ -333,10 +429,14 @@ function drawPageNumber(page, num, ox, oy, fonts) {
 function drawBookletPage(page, ox, oy, bp, pageNum, fonts, ctx) {
   if (!bp || bp.type === 'blank') return
   switch (bp.type) {
-    case 'cover':        drawCover(page, ox, oy, fonts, ctx); return
-    case 'toc':          drawTOC(page, ox, oy, fonts, ctx); return
-    case 'presentation':
-      drawPresentation(page, ox, oy, fonts, bp, ctx)
+    case 'cover':              drawCover(page, ox, oy, fonts, ctx); return
+    case 'toc':                drawTOC(page, ox, oy, fonts, ctx); return
+    case 'presentation-start':
+      drawPresentationStart(page, ox, oy, fonts, bp, ctx)
+      drawPageNumber(page, pageNum, ox, oy, fonts)
+      return
+    case 'presentation-cont':
+      drawPresentationCont(page, ox, oy, fonts, bp, ctx)
       drawPageNumber(page, pageNum, ox, oy, fonts)
       return
     case 'missing':
@@ -347,18 +447,9 @@ function drawBookletPage(page, ox, oy, bp, pageNum, fonts, ctx) {
 }
 
 // ---------------------------------------------------------------------------
-// Top-level: build the booklet PDF
+// Top-level
 // ---------------------------------------------------------------------------
 
-/**
- * @param {object} opts
- * @param {Array} opts.presentations  All presentation rows
- * @param {Array} opts.speakers       All speaker rows
- * @param {Array} opts.resources      All resource rows (any presentation)
- * @param {string} [opts.groupName]
- * @param {string} [opts.projectUrl]
- * @returns {Promise<Blob>}
- */
 export async function generateBookletPdf({
   presentations,
   speakers,
@@ -372,20 +463,12 @@ export async function generateBookletPdf({
   const withSummary    = sorted.filter(p => p.summary && p.summary.trim())
   const withoutSummary = sorted.filter(p => !p.summary || !p.summary.trim())
 
-  // Booklet pages, 1-indexed: 1=cover, 2=TOC, 3..K+2=presentations, K+3=missing
-  const tocEntries = withSummary.map((p, i) => ({
-    date: p.scheduled_date,
-    title: p.topic_title || '(Untitled)',
-    pageNum: i + 3
-  }))
-
   const resourcesForPres = {}
   for (const r of (resources || [])) {
     if (!resourcesForPres[r.presentation_id]) resourcesForPres[r.presentation_id] = []
     resourcesForPres[r.presentation_id].push(r)
   }
 
-  // Date range for cover
   let dateRange = ''
   if (sorted.length) {
     const first = formatDateShort(sorted[0].scheduled_date)
@@ -393,21 +476,7 @@ export async function generateBookletPdf({
     dateRange = first === last ? first : `${first} - ${last}`
   }
 
-  // Reading order
-  const bookletPages = []
-  bookletPages.push({ type: 'cover' })
-  bookletPages.push({ type: 'toc' })
-  withSummary.forEach(p => bookletPages.push({ type: 'presentation', pres: p }))
-  bookletPages.push({ type: 'missing', items: withoutSummary })
-
-  // Pad to a multiple of 4 with blanks
-  while (bookletPages.length % 4 !== 0) {
-    bookletPages.push({ type: 'blank' })
-  }
-  const N = bookletPages.length
-  const sheets = N / 4
-
-  // Build the PDF
+  // Build the PDF + embed fonts (needed for layout measurements)
   const pdf = await PDFDocument.create()
   const fonts = {
     body:        await pdf.embedFont(StandardFonts.Helvetica),
@@ -418,6 +487,47 @@ export async function generateBookletPdf({
     serifItalic: await pdf.embedFont(StandardFonts.TimesRomanItalic)
   }
 
+  // Lay out each presentation into chunks
+  const presLayouts = withSummary.map(p => ({
+    pres: p,
+    chunks: layoutPresentation(p, resourcesForPres[p.id] || [], fonts)
+  }))
+
+  // Build booklet pages in reading order; collect TOC entries as we go.
+  const bookletPages = []
+  bookletPages.push({ type: 'cover' })
+  bookletPages.push({ type: 'toc' })
+
+  const tocEntries = []
+  for (const { pres, chunks } of presLayouts) {
+    const startPage = bookletPages.length + 1  // 1-indexed
+    tocEntries.push({
+      date: pres.scheduled_date,
+      title: pres.topic_title || '(Untitled)',
+      pageNum: startPage
+    })
+    chunks.forEach((items, i) => {
+      if (i === 0) {
+        bookletPages.push({ type: 'presentation-start', pres, items })
+      } else {
+        bookletPages.push({
+          type: 'presentation-cont', pres, items,
+          partN: i + 1, totalParts: chunks.length
+        })
+      }
+    })
+  }
+
+  bookletPages.push({ type: 'missing', items: withoutSummary })
+
+  // Pad with blanks so the total is a multiple of 4
+  while (bookletPages.length % 4 !== 0) {
+    bookletPages.push({ type: 'blank' })
+  }
+
+  const N = bookletPages.length
+  const sheets = N / 4
+
   pdf.setTitle(`${groupName} - AI summaries anthology`)
   pdf.setAuthor(groupName)
   pdf.setCreator('Casa Class app')
@@ -425,9 +535,9 @@ export async function generateBookletPdf({
 
   const ctx = { groupName, projectUrl, dateRange, tocEntries, speakers, resourcesForPres }
 
-  // Saddle-stitch imposition. For 0-indexed sheet s (0..sheets-1):
-  //   Front (outer): left = page[N-2s-1], right = page[2s]
-  //   Back  (inner): left = page[2s+1],   right = page[N-2s-2]
+  // Saddle-stitch imposition: each sheet holds 4 booklet pages.
+  //   Front (outer side): left = page[N-2s-1], right = page[2s]
+  //   Back  (inner side): left = page[2s+1],   right = page[N-2s-2]
   for (let s = 0; s < sheets; s++) {
     const frontL = N - 2*s - 1
     const frontR = 2*s
