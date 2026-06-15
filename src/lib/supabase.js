@@ -20,7 +20,8 @@ const FUNCTION_BASE = url ? `${url}/functions/v1` : ''
 export const SUMMARIZE_FUNCTION_URL =
   import.meta.env.VITE_SUMMARIZE_FUNCTION_URL ?? `${FUNCTION_BASE}/summarize`
 
-export const EXTRACT_FACTS_URL = `${FUNCTION_BASE}/extract-facts`
-export const VERIFY_FACTS_URL  = `${FUNCTION_BASE}/verify-facts`
+export const EXTRACT_FACTS_URL     = `${FUNCTION_BASE}/extract-facts`
+export const VERIFY_FACTS_URL      = `${FUNCTION_BASE}/verify-facts`
+export const ANALYZE_DISTORTION_URL = `${FUNCTION_BASE}/analyze-distortion`
 
 export const SUPABASE_ANON_KEY = anonKey ?? ''

@@ -11,3 +11,6 @@ verify_jwt = false
 
 [functions.verify-facts]
 verify_jwt = false
+
+[functions.analyze-distortion]
+verify_jwt = false
