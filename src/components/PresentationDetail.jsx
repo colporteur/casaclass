@@ -4,7 +4,7 @@ import { supabase, SUMMARIZE_FUNCTION_URL, SUPABASE_ANON_KEY } from '../lib/supa
 import { useTable } from '../hooks/useTable.js'
 import { getDisplayName } from '../lib/identity.js'
 import { formatLong, todayISO } from '../lib/dates.js'
-import { LABEL_INFO, DISTORTION_INFO, ScoreCard } from './ArgumentAnalyzer.jsx'
+import { LABEL_INFO, DISTORTION_INFO, ScoreCard, clearAnalysisForPresentation } from './ArgumentAnalyzer.jsx'
 import {
   verificationScore, distortionScore, fallaciesScore,
   evidenceScore, consistencyScore, steelmanningScore
@@ -530,7 +530,16 @@ function AnalysisSummaryCard({ presentationId }) {
             {issues.length > 0 && <>, {issues.length} consistency issue{issues.length === 1 ? '' : 's'}</>}.
           </div>
         </div>
-        <Link to="/analyzer" className="btn-secondary text-sm">Open in Analyzer</Link>
+        <div className="flex items-center gap-2">
+          <button
+            className="btn-danger text-xs"
+            onClick={async () => {
+              if (!confirm('Clear ALL analysis data for this program? This deletes extracted facts, fallacies, consistency issues, and the steelman assessment. The transcript and AI summary are not affected.')) return
+              await clearAnalysisForPresentation(presentationId)
+            }}
+          >Clear analysis</button>
+          <Link to="/analyzer" className="btn-secondary text-sm">Open in Analyzer</Link>
+        </div>
       </div>
 
       <ScoreCard scores={scores} compact />

@@ -418,7 +418,20 @@ function AnalyzerWorkspace({ presentation, speakers }) {
         <h2 className="font-display text-2xl mt-1 leading-tight">
           {presentation.topic_title || <span className="text-ink/40">Untitled</span>}
         </h2>
-        <div className="text-sm text-ink/70 mt-1">{sp?.name || 'Speaker not recorded'}</div>
+        <div className="flex items-center justify-between gap-2 mt-1 flex-wrap">
+          <div className="text-sm text-ink/70">{sp?.name || 'Speaker not recorded'}</div>
+          {(facts.length > 0 || analysis.fallacies.length > 0 || analysis.issues.length > 0 || analysis.steelman) && (
+            <button
+              className="btn-danger text-xs"
+              disabled={busy !== ''}
+              onClick={async () => {
+                if (!confirm('Clear ALL analysis data for this program? This deletes extracted facts, fallacies, consistency issues, and the steelman assessment. The transcript and AI summary are not affected.')) return
+                await clearAnalysisForPresentation(presentation.id)
+                await Promise.all([analysis.refreshFacts(), analysis.refreshFallacies(), analysis.refreshIssues(), analysis.refreshSteelman()])
+              }}
+            >Clear analysis</button>
+          )}
+        </div>
       </section>
 
       <ScoreCard scores={scores} />
@@ -1023,4 +1036,80 @@ function FeedSummary({ layer, summary, status }) {
   }
 
   return <span className="text-sm text-ink/60">Done.</span>
+}
+
+function ProgramStatsCard({ presentation, speakers, layerStatus, running, sideLabel }) {
+  const analysis = usePresentationAnalysis(presentation?.id)
+  if (!presentation) return null
+  const scores = computeScores(analysis)
+  const sp = speakers.find(s => s.id === presentation.speaker_id)
+  const hasStatus = layerStatus && Object.keys(layerStatus).length > 0
+  const sideClass = sideLabel === 'A'
+    ? 'bg-emerald-100 text-emerald-700'
+    : 'bg-purple-100 text-purple-700'
+
+  return (
+    <div className="card">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs uppercase tracking-wider text-ink/50">{formatShort(presentation.scheduled_date)}</div>
+        {sideLabel && <span className={`pill ${sideClass} font-bold`}>Program {sideLabel}</span>}
+      </div>
+      <h3 className="font-display text-lg leading-tight mt-1">
+        {presentation.topic_title || <span className="text-ink/40">Untitled</span>}
+      </h3>
+      <div className="text-sm text-ink/70 mb-3">{sp?.name || 'Speaker not recorded'}</div>
+
+      <ScoreCard scores={scores} compact />
+
+      {hasStatus && <LayerProgress layerStatus={layerStatus} running={running} />}
+
+      <div className="mt-4 grid grid-cols-2 gap-3 text-center">
+        <Stat label="Facts" value={analysis.facts.length} />
+        <Stat label="Fallacies" value={analysis.fallacies.length} />
+        <Stat label="Consistency issues" value={analysis.issues.length} />
+        <Stat label="Verified true" value={analysis.facts.filter(f => f.label === 'true').length} />
+      </div>
+    </div>
+  )
+}
+
+function LayerProgress({ layerStatus, running }) {
+  return (
+    <div className="mt-4">
+      <div className="text-[10px] uppercase tracking-wider text-ink/40 mb-1.5">Pipeline status</div>
+      <div className="grid grid-cols-7 gap-1">
+        {PIPELINE_LAYERS.map(layer => {
+          const st = layerStatus[layer.key] || { status: 'pending' }
+          const tone =
+            st.status === 'done'    ? 'bg-emerald-100 text-emerald-700 border-emerald-300' :
+            st.status === 'running' ? 'bg-amber-100 text-amber-700 border-amber-300 animate-pulse' :
+            st.status === 'error'   ? 'bg-red-100 text-red-700 border-red-300' :
+                                      'bg-sunrise-50 text-ink/40 border-sunrise-100'
+          const icon =
+            st.status === 'done'    ? '✓' :
+            st.status === 'running' ? '⋯' :
+            st.status === 'error'   ? '×' : '·'
+          return (
+            <div
+              key={layer.key}
+              title={st.error ? `${layer.label}: ${st.error}` : layer.label + (st.status !== 'pending' ? ` — ${st.status}` : '')}
+              className={`rounded border ${tone} px-1.5 py-1 text-center transition-colors`}
+            >
+              <div className="text-base leading-none">{icon}</div>
+              <div className="text-[9px] mt-0.5 truncate">{layer.label}</div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function Stat({ label, value }) {
+  return (
+    <div className="bg-sunrise-50 rounded-lg p-2">
+      <div className="text-2xl font-display leading-none">{value}</div>
+      <div className="text-[10px] uppercase tracking-wider text-ink/50 mt-1">{label}</div>
+    </div>
+  )
 }
