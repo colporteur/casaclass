@@ -1,13 +1,15 @@
-// Runs the full Argument Analyzer pipeline for a single presentation.
-// Layers are kicked off in parallel where their dependencies allow:
+// Argument Analyzer pipeline.
 //
-//   extract -> verify -> { distortion, evidence }
-//           -> fallacies  (parallel)
-//           -> steelman   (parallel)
-//           -> consistency (parallel, needs facts)
+// Each layer is a standalone async function that mutates the per-program
+// `state` object (carrying forward facts, labels, etc.) and returns a
+// structured `summary` the UI can render.
 //
-// The orchestrator calls onProgress(layerKey, status, info?) so the UI can
-// show live status. Status values: 'running' | 'done' | 'error'.
+// Two top-level orchestrators:
+//   - runFullAnalysis: runs every layer for ONE program (independent layers
+//     fan out in parallel).
+//   - runComparativeAnalysis: walks layers in order, alternating A then B
+//     within each layer. Slower wall clock but very legible -- ideal for
+//     watching the comparison unfold step by step.
 
 import {
   supabase,
@@ -27,198 +29,251 @@ const HEADERS = {
   'apikey':        SUPABASE_ANON_KEY
 }
 
-export const PIPELINE_LAYERS = [
-  { key: 'extract',     label: 'Extract' },
-  { key: 'verify',      label: 'Verify' },
-  { key: 'fallacies',   label: 'Fallacies' },
-  { key: 'distortion',  label: 'Distortion' },
-  { key: 'evidence',    label: 'Evidence' },
-  { key: 'consistency', label: 'Consistency' },
-  { key: 'steelman',    label: 'Steelman' }
-]
-
 async function callFn(url, body) {
   const res = await fetch(url, { method: 'POST', headers: HEADERS, body: JSON.stringify(body) })
   if (!res.ok) throw new Error(`${url.split('/').pop()} failed (${res.status}): ${(await res.text()).slice(0, 200)}`)
   return res.json()
 }
 
-// Wrap a layer step with progress reporting + error capture.
-function withProgress(onProgress, key, fn) {
-  return (async () => {
-    onProgress(key, 'running')
-    try {
-      const result = await fn()
-      onProgress(key, 'done')
-      return result
-    } catch (e) {
-      onProgress(key, 'error', String(e.message || e))
-      // Swallow so other parallel layers can keep running.
-      return null
-    }
-  })()
+// ---------------------------------------------------------------------------
+// Layer implementations. Each mutates `state` and returns a `summary` object.
+// state shape: { facts: [...] }  (other layers don't need carry-forward state)
+// ---------------------------------------------------------------------------
+
+async function layerExtract(presentation, state) {
+  const { facts } = await callFn(EXTRACT_FACTS_URL, { transcript: presentation.transcript })
+  if (!facts?.length) throw new Error('No facts extracted')
+  await supabase.from('extracted_facts').delete().eq('presentation_id', presentation.id)
+  const rows = facts.map((f, i) => ({
+    presentation_id: presentation.id,
+    fact_text: f,
+    ordinal: i
+  }))
+  const { data, error } = await supabase.from('extracted_facts').insert(rows).select()
+  if (error) throw error
+  state.facts = data || []
+  return { count: state.facts.length }
 }
+
+async function layerVerify(presentation, state) {
+  const facts = state.facts || []
+  if (facts.length === 0) throw new Error('No facts to verify (run extract first)')
+  const BATCH = 20
+  const labels = {}
+  for (let i = 0; i < facts.length; i += BATCH) {
+    const batch = facts.slice(i, i + BATCH)
+    const { results } = await callFn(VERIFY_FACTS_URL, { facts: batch.map(f => f.fact_text) })
+    const now = new Date().toISOString()
+    await Promise.all(batch.map((f, j) => {
+      const r = results[j]; if (!r) return Promise.resolve()
+      labels[r.label] = (labels[r.label] || 0) + 1
+      f.label = r.label
+      f.reasoning = r.reasoning
+      return supabase.from('extracted_facts')
+        .update({ label: r.label, reasoning: r.reasoning, analyzed_at: now })
+        .eq('id', f.id)
+    }))
+  }
+  return { total: facts.length, labels }
+}
+
+async function layerFallacies(presentation, state) {
+  const { fallacies } = await callFn(DETECT_FALLACIES_URL, { transcript: presentation.transcript })
+  await supabase.from('logical_fallacies').delete().eq('presentation_id', presentation.id)
+  if (fallacies?.length) {
+    const rows = fallacies.map((f, i) => ({
+      presentation_id: presentation.id,
+      passage_quote: f.passage_quote,
+      fallacy_type: f.fallacy_type,
+      severity: f.severity,
+      explanation: f.explanation,
+      ordinal: i,
+      analyzed_at: new Date().toISOString()
+    }))
+    const { error } = await supabase.from('logical_fallacies').insert(rows)
+    if (error) throw error
+  }
+  const types = {}
+  const examples = []
+  for (const f of (fallacies || [])) {
+    types[f.fallacy_type] = (types[f.fallacy_type] || 0) + 1
+    if (examples.length < 2) examples.push({ type: f.fallacy_type, quote: f.passage_quote })
+  }
+  state.fallacies = fallacies || []
+  return { count: fallacies?.length || 0, types, examples }
+}
+
+async function layerDistortion(presentation, state) {
+  const verified = (state.facts || []).filter(f => f.label === 'true')
+  if (verified.length === 0) return { total: 0, labels: {}, skipped: true }
+  const BATCH = 15
+  const labels = {}
+  for (let i = 0; i < verified.length; i += BATCH) {
+    const batch = verified.slice(i, i + BATCH)
+    const { results } = await callFn(ANALYZE_DISTORTION_URL, {
+      transcript: presentation.transcript,
+      facts: batch.map(f => f.fact_text)
+    })
+    const now = new Date().toISOString()
+    await Promise.all(batch.map((f, j) => {
+      const r = results[j]; if (!r) return Promise.resolve()
+      labels[r.label] = (labels[r.label] || 0) + 1
+      f.distortion_label = r.label
+      return supabase.from('extracted_facts').update({
+        distortion_label: r.label,
+        distortion_reasoning: r.reasoning,
+        distortion_analyzed_at: now
+      }).eq('id', f.id)
+    }))
+  }
+  return { total: verified.length, labels }
+}
+
+async function layerEvidence(presentation, state) {
+  const verified = (state.facts || []).filter(f => f.label === 'true')
+  if (verified.length === 0) return { total: 0, labels: {}, skipped: true }
+  const BATCH = 15
+  const labels = {}
+  for (let i = 0; i < verified.length; i += BATCH) {
+    const batch = verified.slice(i, i + BATCH)
+    const { results } = await callFn(ASSESS_EVIDENCE_URL, {
+      transcript: presentation.transcript,
+      facts: batch.map(f => f.fact_text)
+    })
+    const now = new Date().toISOString()
+    await Promise.all(batch.map((f, j) => {
+      const r = results[j]; if (!r) return Promise.resolve()
+      labels[r.label] = (labels[r.label] || 0) + 1
+      f.evidence_quality_label = r.label
+      return supabase.from('extracted_facts').update({
+        evidence_quality_label: r.label,
+        evidence_quality_reasoning: r.reasoning,
+        evidence_quality_analyzed_at: now
+      }).eq('id', f.id)
+    }))
+  }
+  return { total: verified.length, labels }
+}
+
+async function layerConsistency(presentation, state) {
+  const facts = state.facts || []
+  if (facts.length === 0) return { count: 0, examples: [] }
+  const { issues } = await callFn(CHECK_CONSISTENCY_URL, {
+    transcript: presentation.transcript,
+    facts: facts.map(f => f.fact_text)
+  })
+  await supabase.from('consistency_issues').delete().eq('presentation_id', presentation.id)
+  if (issues?.length) {
+    const rows = issues.map((x, i) => ({
+      presentation_id: presentation.id,
+      description: x.description,
+      fact_a: x.fact_a,
+      fact_b: x.fact_b,
+      severity: x.severity,
+      ordinal: i,
+      analyzed_at: new Date().toISOString()
+    }))
+    const { error } = await supabase.from('consistency_issues').insert(rows)
+    if (error) throw error
+  }
+  const examples = (issues || []).slice(0, 2).map(i => ({ desc: i.description, severity: i.severity }))
+  return { count: issues?.length || 0, examples }
+}
+
+async function layerSteelman(presentation, state) {
+  const result = await callFn(ASSESS_STEELMAN_URL, { transcript: presentation.transcript })
+  const { error } = await supabase
+    .from('steelman_assessments')
+    .upsert({
+      presentation_id: presentation.id,
+      score: result.score,
+      summary: result.summary,
+      engaged_views: result.engaged_views,
+      omitted_views: result.omitted_views,
+      analyzed_at: new Date().toISOString()
+    }, { onConflict: 'presentation_id' })
+  if (error) throw error
+  return { score: result.score, summary: result.summary }
+}
+
+// ---------------------------------------------------------------------------
+// Layer registry (also exposed for UI status tiles)
+// ---------------------------------------------------------------------------
+
+const LAYER_DEFS = [
+  { key: 'extract',     label: 'Extract',     fn: layerExtract },
+  { key: 'verify',      label: 'Verify',      fn: layerVerify },
+  { key: 'fallacies',   label: 'Fallacies',   fn: layerFallacies },
+  { key: 'distortion',  label: 'Distortion',  fn: layerDistortion },
+  { key: 'evidence',    label: 'Evidence',    fn: layerEvidence },
+  { key: 'consistency', label: 'Consistency', fn: layerConsistency },
+  { key: 'steelman',    label: 'Steelman',    fn: layerSteelman }
+]
+
+export const PIPELINE_LAYERS = LAYER_DEFS.map(({ key, label }) => ({ key, label }))
+
+// ---------------------------------------------------------------------------
+// Comparative orchestrator: layer-by-layer, A then B within each layer.
+// Callbacks: onLayerStart(side, key); onLayerResult(side, key, summary);
+//            onLayerError(side, key, message)
+// ---------------------------------------------------------------------------
+
+export async function runComparativeAnalysis({
+  presA, presB,
+  onLayerStart = () => {},
+  onLayerResult = () => {},
+  onLayerError = () => {}
+}) {
+  const states = { A: {}, B: {} }
+  const presentations = { A: presA, B: presB }
+
+  for (const layer of LAYER_DEFS) {
+    for (const side of ['A', 'B']) {
+      const pres = presentations[side]
+      if (!pres) continue
+      onLayerStart(side, layer.key)
+      try {
+        const summary = await layer.fn(pres, states[side])
+        onLayerResult(side, layer.key, summary)
+      } catch (e) {
+        onLayerError(side, layer.key, String(e.message || e))
+        // Continue to next side/layer; dependents may also fail but that's fine.
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Legacy parallel orchestrator (kept for any other caller that wants speed
+// over drama). Used internally by tests; not currently in the UI.
+// ---------------------------------------------------------------------------
 
 export async function runFullAnalysis({ presentation, onProgress = () => {} }) {
   if (!presentation?.transcript) {
-    for (const layer of PIPELINE_LAYERS) onProgress(layer.key, 'error', 'No transcript')
+    for (const layer of LAYER_DEFS) onProgress(layer.key, 'error', 'No transcript')
     return
   }
-  const presentationId = presentation.id
-  const transcript = presentation.transcript
+  const state = {}
 
-  // --- Extract (must run first) ---
-  const facts = await withProgress(onProgress, 'extract', async () => {
-    const { facts: extracted } = await callFn(EXTRACT_FACTS_URL, { transcript })
-    if (!extracted?.length) throw new Error('No facts extracted')
-    await supabase.from('extracted_facts').delete().eq('presentation_id', presentationId)
-    const rows = extracted.map((f, i) => ({
-      presentation_id: presentationId,
-      fact_text: f,
-      ordinal: i
-    }))
-    const { data, error } = await supabase.from('extracted_facts').insert(rows).select()
-    if (error) throw error
-    return data
-  })
-
-  if (!facts) {
-    // Extract failed; mark everything else errored.
-    for (const layer of PIPELINE_LAYERS.slice(1)) onProgress(layer.key, 'error', 'Skipped (extract failed)')
-    return
+  function wrap(key, fn) {
+    return (async () => {
+      onProgress(key, 'running')
+      try { const s = await fn(); onProgress(key, 'done', s); return s }
+      catch (e) { onProgress(key, 'error', String(e.message || e)); return null }
+    })()
   }
 
-  // --- Independent layers (kick off in parallel) ---
-  const fallaciesPromise = withProgress(onProgress, 'fallacies', async () => {
-    const { fallacies } = await callFn(DETECT_FALLACIES_URL, { transcript })
-    await supabase.from('logical_fallacies').delete().eq('presentation_id', presentationId)
-    if (fallacies?.length) {
-      const rows = fallacies.map((f, i) => ({
-        presentation_id: presentationId,
-        passage_quote: f.passage_quote,
-        fallacy_type: f.fallacy_type,
-        severity: f.severity,
-        explanation: f.explanation,
-        ordinal: i,
-        analyzed_at: new Date().toISOString()
-      }))
-      const { error } = await supabase.from('logical_fallacies').insert(rows)
-      if (error) throw error
-    }
-  })
-
-  const steelmanPromise = withProgress(onProgress, 'steelman', async () => {
-    const result = await callFn(ASSESS_STEELMAN_URL, { transcript })
-    const { error } = await supabase
-      .from('steelman_assessments')
-      .upsert({
-        presentation_id: presentationId,
-        score: result.score,
-        summary: result.summary,
-        engaged_views: result.engaged_views,
-        omitted_views: result.omitted_views,
-        analyzed_at: new Date().toISOString()
-      }, { onConflict: 'presentation_id' })
-    if (error) throw error
-  })
-
-  const consistencyPromise = withProgress(onProgress, 'consistency', async () => {
-    const { issues } = await callFn(CHECK_CONSISTENCY_URL, {
-      transcript,
-      facts: facts.map(f => f.fact_text)
-    })
-    await supabase.from('consistency_issues').delete().eq('presentation_id', presentationId)
-    if (issues?.length) {
-      const rows = issues.map((x, i) => ({
-        presentation_id: presentationId,
-        description: x.description,
-        fact_a: x.fact_a,
-        fact_b: x.fact_b,
-        severity: x.severity,
-        ordinal: i,
-        analyzed_at: new Date().toISOString()
-      }))
-      const { error } = await supabase.from('consistency_issues').insert(rows)
-      if (error) throw error
-    }
-  })
-
-  // --- Verify (gates distortion + evidence) ---
-  const verifyPromise = withProgress(onProgress, 'verify', async () => {
-    const BATCH = 20
-    for (let i = 0; i < facts.length; i += BATCH) {
-      const batch = facts.slice(i, i + BATCH)
-      const { results } = await callFn(VERIFY_FACTS_URL, { facts: batch.map(f => f.fact_text) })
-      const now = new Date().toISOString()
-      await Promise.all(batch.map((f, j) => {
-        const r = results[j]; if (!r) return Promise.resolve()
-        return supabase.from('extracted_facts')
-          .update({ label: r.label, reasoning: r.reasoning, analyzed_at: now })
-          .eq('id', f.id)
-      }))
-      // Update local facts so distortion/evidence see the new labels
-      for (let j = 0; j < batch.length; j++) {
-        if (results[j]) batch[j].label = results[j].label
-      }
-    }
-  })
-
-  // Chain dependent layers off verify; if verify errors, they still report 'error'
-  const distortionPromise = (async () => {
-    await verifyPromise
-    return withProgress(onProgress, 'distortion', async () => {
-      const verifiedTrue = facts.filter(f => f.label === 'true')
-      if (verifiedTrue.length === 0) return  // nothing to analyze
-      const BATCH = 15
-      for (let i = 0; i < verifiedTrue.length; i += BATCH) {
-        const batch = verifiedTrue.slice(i, i + BATCH)
-        const { results } = await callFn(ANALYZE_DISTORTION_URL, {
-          transcript,
-          facts: batch.map(f => f.fact_text)
-        })
-        const now = new Date().toISOString()
-        await Promise.all(batch.map((f, j) => {
-          const r = results[j]; if (!r) return Promise.resolve()
-          return supabase.from('extracted_facts').update({
-            distortion_label: r.label,
-            distortion_reasoning: r.reasoning,
-            distortion_analyzed_at: now
-          }).eq('id', f.id)
-        }))
-      }
-    })
-  })()
-
-  const evidencePromise = (async () => {
-    await verifyPromise
-    return withProgress(onProgress, 'evidence', async () => {
-      const verifiedTrue = facts.filter(f => f.label === 'true')
-      if (verifiedTrue.length === 0) return
-      const BATCH = 15
-      for (let i = 0; i < verifiedTrue.length; i += BATCH) {
-        const batch = verifiedTrue.slice(i, i + BATCH)
-        const { results } = await callFn(ASSESS_EVIDENCE_URL, {
-          transcript,
-          facts: batch.map(f => f.fact_text)
-        })
-        const now = new Date().toISOString()
-        await Promise.all(batch.map((f, j) => {
-          const r = results[j]; if (!r) return Promise.resolve()
-          return supabase.from('extracted_facts').update({
-            evidence_quality_label: r.label,
-            evidence_quality_reasoning: r.reasoning,
-            evidence_quality_analyzed_at: now
-          }).eq('id', f.id)
-        }))
-      }
-    })
-  })()
-
-  await Promise.all([
-    fallaciesPromise,
-    steelmanPromise,
-    consistencyPromise,
-    distortionPromise,
-    evidencePromise
-  ])
+  const extractResult = await wrap('extract', () => layerExtract(presentation, state))
+  if (!extractResult) {
+    for (const k of ['verify','fallacies','distortion','evidence','consistency','steelman']) onProgress(k, 'error', 'Skipped')
+    return
+  }
+  const verifyPromise = wrap('verify', () => layerVerify(presentation, state))
+  const fallaciesPromise = wrap('fallacies', () => layerFallacies(presentation, state))
+  const steelmanPromise = wrap('steelman', () => layerSteelman(presentation, state))
+  const consistencyPromise = wrap('consistency', () => layerConsistency(presentation, state))
+  await verifyPromise
+  const distortionPromise = wrap('distortion', () => layerDistortion(presentation, state))
+  const evidencePromise = wrap('evidence', () => layerEvidence(presentation, state))
+  await Promise.all([fallaciesPromise, steelmanPromise, consistencyPromise, distortionPromise, evidencePromise])
 }

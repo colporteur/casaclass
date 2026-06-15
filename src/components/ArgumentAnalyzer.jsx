@@ -20,7 +20,7 @@ import {
   evidenceScore, consistencyScore, steelmanningScore,
   compositeScore, scoreToGrade, formatPct, DEFAULT_WEIGHTS
 } from '../lib/scoring.js'
-import { runFullAnalysis, PIPELINE_LAYERS } from '../lib/analyzerPipeline.js'
+import { runFullAnalysis, runComparativeAnalysis, PIPELINE_LAYERS } from '../lib/analyzerPipeline.js'
 
 export { LABEL_INFO, DISTORTION_INFO, FALLACY_INFO, EVIDENCE_INFO } // re-export for other components
 
@@ -168,7 +168,10 @@ export function ScoreCard({ scores, compact = false }) {
                   <span className="font-mono">{has ? formatPct(s) : '—'}</span>
                 </div>
                 <div className="h-1.5 mt-0.5 rounded-full bg-sunrise-100 overflow-hidden">
-                  {has && <div className={`h-full ${fill}`} style={{ width: (s * 100) + '%' }} />}
+                  <div
+                    className={`h-full ${has ? fill : ''} transition-all duration-700 ease-out`}
+                    style={{ width: has ? (s * 100) + '%' : '0%' }}
+                  />
                 </div>
               </div>
             )
@@ -766,11 +769,12 @@ function CompareProgramsView() {
   const [leftId, setLeftId]   = useState('')
   const [rightId, setRightId] = useState('')
 
-  // Per-side per-layer status. Keyed by layer key -> { status, error? }
-  // status: 'idle' | 'running' | 'done' | 'error'
+  // Per-side per-layer status. status: 'pending' | 'running' | 'done' | 'error'
   const [leftStatus, setLeftStatus]   = useState({})
   const [rightStatus, setRightStatus] = useState({})
   const [running, setRunning] = useState(false)
+  const [active, setActive] = useState(null)         // { side, layer } currently in flight
+  const [feed, setFeed] = useState([])               // chronological event log
 
   const analyzed = presentations.filter(p => p.transcript)
   const leftPres  = presentations.find(p => p.id === leftId)
@@ -780,12 +784,8 @@ function CompareProgramsView() {
     const initial = Object.fromEntries(PIPELINE_LAYERS.map(l => [l.key, { status: 'pending' }]))
     setLeftStatus(initial)
     setRightStatus(initial)
-  }
-
-  function makeProgress(setter) {
-    return (key, status, info) => {
-      setter(prev => ({ ...prev, [key]: { status, error: status === 'error' ? info : undefined } }))
-    }
+    setFeed([])
+    setActive(null)
   }
 
   async function runBoth() {
@@ -793,12 +793,28 @@ function CompareProgramsView() {
     setRunning(true)
     resetStatuses()
     try {
-      await Promise.all([
-        runFullAnalysis({ presentation: leftPres,  onProgress: makeProgress(setLeftStatus) }),
-        runFullAnalysis({ presentation: rightPres, onProgress: makeProgress(setRightStatus) })
-      ])
+      await runComparativeAnalysis({
+        presA: leftPres,
+        presB: rightPres,
+        onLayerStart: (side, key) => {
+          const setter = side === 'A' ? setLeftStatus : setRightStatus
+          setter(prev => ({ ...prev, [key]: { status: 'running' } }))
+          setActive({ side, layer: key })
+        },
+        onLayerResult: (side, key, summary) => {
+          const setter = side === 'A' ? setLeftStatus : setRightStatus
+          setter(prev => ({ ...prev, [key]: { status: 'done' } }))
+          setFeed(prev => [...prev, { side, layer: key, summary, status: 'done', ts: Date.now() }])
+        },
+        onLayerError: (side, key, err) => {
+          const setter = side === 'A' ? setLeftStatus : setRightStatus
+          setter(prev => ({ ...prev, [key]: { status: 'error', error: err } }))
+          setFeed(prev => [...prev, { side, layer: key, summary: { error: err }, status: 'error', ts: Date.now() }])
+        }
+      })
     } finally {
       setRunning(false)
+      setActive(null)
     }
   }
 
@@ -842,6 +858,22 @@ function CompareProgramsView() {
           </button>
         </div>
       </section>
+      {active && (
+        <section className="card-tint">
+          <div className="flex items-center gap-3">
+            <span className={`pill ${active.side === 'A' ? 'bg-emerald-100 text-emerald-700' : 'bg-purple-100 text-purple-700'} font-bold`}>
+              Program {active.side}
+            </span>
+            <div className="flex-1">
+              <div className="text-sm">
+                Running <span className="font-medium">{PIPELINE_LAYERS.find(l => l.key === active.layer)?.label || active.layer}</span>…
+              </div>
+            </div>
+            <span className="inline-block w-4 h-4 rounded-full bg-amber-300 animate-pulse" />
+          </div>
+        </section>
+      )}
+
       {leftId && rightId && (
         <div className="grid sm:grid-cols-2 gap-4">
           <ProgramStatsCard
@@ -849,85 +881,146 @@ function CompareProgramsView() {
             speakers={speakers}
             layerStatus={leftStatus}
             running={running}
+            sideLabel="A"
           />
           <ProgramStatsCard
             presentation={rightPres}
             speakers={speakers}
             layerStatus={rightStatus}
             running={running}
+            sideLabel="B"
           />
         </div>
+      )}
+
+      {feed.length > 0 && (
+        <section className="card">
+          <h2 className="font-display text-xl mb-3">Live analysis feed</h2>
+          <ul className="divide-y divide-sunrise-100">
+            {[...feed].reverse().map((entry, i) => (
+              <FeedEntry key={entry.ts + '-' + i} entry={entry} />
+            ))}
+          </ul>
+        </section>
       )}
     </>
   )
 }
 
-function ProgramStatsCard({ presentation, speakers, layerStatus, running }) {
-  const analysis = usePresentationAnalysis(presentation?.id)
-  if (!presentation) return null
-  const scores = computeScores(analysis)
-  const sp = speakers.find(s => s.id === presentation.speaker_id)
-  const hasStatus = layerStatus && Object.keys(layerStatus).length > 0
-
+function FeedEntry({ entry }) {
+  const sideClass = entry.side === 'A'
+    ? 'bg-emerald-100 text-emerald-700'
+    : 'bg-purple-100 text-purple-700'
+  const layerLabel = PIPELINE_LAYERS.find(l => l.key === entry.layer)?.label || entry.layer
   return (
-    <div className="card">
-      <div className="text-xs uppercase tracking-wider text-ink/50">{formatShort(presentation.scheduled_date)}</div>
-      <h3 className="font-display text-lg leading-tight mt-1">
-        {presentation.topic_title || <span className="text-ink/40">Untitled</span>}
-      </h3>
-      <div className="text-sm text-ink/70 mb-3">{sp?.name || 'Speaker not recorded'}</div>
-
-      <ScoreCard scores={scores} compact />
-
-      {hasStatus && <LayerProgress layerStatus={layerStatus} running={running} />}
-
-      <div className="mt-4 grid grid-cols-2 gap-3 text-center">
-        <Stat label="Facts" value={analysis.facts.length} />
-        <Stat label="Fallacies" value={analysis.fallacies.length} />
-        <Stat label="Consistency issues" value={analysis.issues.length} />
-        <Stat label="Verified true" value={analysis.facts.filter(f => f.label === 'true').length} />
+    <li className="py-2.5 flex items-start gap-3 flex-wrap">
+      <span className={`pill ${sideClass} font-bold shrink-0`}>{entry.side}</span>
+      <span className="text-sm font-medium w-24 shrink-0">{layerLabel}</span>
+      <div className="flex-1 min-w-0">
+        <FeedSummary layer={entry.layer} summary={entry.summary} status={entry.status} />
       </div>
-    </div>
+    </li>
   )
 }
 
-function LayerProgress({ layerStatus, running }) {
-  return (
-    <div className="mt-4">
-      <div className="text-[10px] uppercase tracking-wider text-ink/40 mb-1.5">Pipeline status</div>
-      <div className="grid grid-cols-7 gap-1">
-        {PIPELINE_LAYERS.map(layer => {
-          const st = layerStatus[layer.key] || { status: 'pending' }
-          const tone =
-            st.status === 'done'    ? 'bg-emerald-100 text-emerald-700 border-emerald-300' :
-            st.status === 'running' ? 'bg-amber-100 text-amber-700 border-amber-300 animate-pulse' :
-            st.status === 'error'   ? 'bg-red-100 text-red-700 border-red-300' :
-                                      'bg-sunrise-50 text-ink/40 border-sunrise-100'
-          const icon =
-            st.status === 'done'    ? '✓' :
-            st.status === 'running' ? '⋯' :
-            st.status === 'error'   ? '×' : '·'
-          return (
-            <div
-              key={layer.key}
-              title={st.error ? `${layer.label}: ${st.error}` : layer.label + (st.status !== 'pending' ? ` — ${st.status}` : '')}
-              className={`rounded border ${tone} px-1.5 py-1 text-center transition-colors`}
-            >
-              <div className="text-base leading-none">{icon}</div>
-              <div className="text-[9px] mt-0.5 truncate">{layer.label}</div>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
+function FeedSummary({ layer, summary, status }) {
+  if (status === 'error' || summary?.error) {
+    return <span className="text-sm text-red-600">Error: {summary?.error || 'failed'}</span>
+  }
+  if (summary?.skipped) {
+    return <span className="text-sm text-ink/50 italic">Skipped (nothing to analyze)</span>
+  }
+  if (layer === 'extract') {
+    return <span className="text-sm">Extracted <span className="font-medium">{summary.count}</span> fact{summary.count === 1 ? '' : 's'}.</span>
+  }
 
-function Stat({ label, value }) {
-  return (
-    <div className="bg-sunrise-50 rounded-lg p-2">
-      <div className="text-2xl font-display leading-none">{value}</div>
-      <div className="text-[10px] uppercase tracking-wider text-ink/50 mt-1">{label}</div>
-    </div>
-  )
+  if (layer === 'verify') {
+    return (
+      <div className="flex flex-wrap gap-1 items-center text-sm">
+        <span>Of {summary.total}:</span>
+        {Object.entries(summary.labels).map(([k, count]) => (
+          <span key={k} className={`pill ${LABEL_INFO[k]?.cls || 'bg-slate-100'}`}>
+            {LABEL_INFO[k]?.short || k}: {count}
+          </span>
+        ))}
+      </div>
+    )
+  }
+
+  if (layer === 'fallacies') {
+    if (summary.count === 0) return <span className="text-sm text-emerald-700">No fallacies found.</span>
+    return (
+      <div>
+        <div className="flex flex-wrap gap-1 items-center text-sm">
+          <span><span className="font-medium">{summary.count}</span> found:</span>
+          {Object.entries(summary.types).map(([k, count]) => (
+            <span key={k} className={`pill ${FALLACY_INFO[k]?.cls || 'bg-slate-100'}`}>
+              {FALLACY_INFO[k]?.short || k}: {count}
+            </span>
+          ))}
+        </div>
+        {summary.examples?.length > 0 && (
+          <div className="mt-1 text-xs italic text-ink/70 border-l-2 border-sunrise-200 pl-2">
+            "{summary.examples[0].quote.length > 140 ? summary.examples[0].quote.slice(0, 140) + '...' : summary.examples[0].quote}"
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  if (layer === 'distortion') {
+    return (
+      <div className="flex flex-wrap gap-1 items-center text-sm">
+        <span>Of {summary.total} verified:</span>
+        {Object.entries(summary.labels).map(([k, count]) => (
+          <span key={k} className={`pill ${DISTORTION_INFO[k]?.cls || 'bg-slate-100'}`}>
+            {DISTORTION_INFO[k]?.short || k}: {count}
+          </span>
+        ))}
+      </div>
+    )
+  }
+
+  if (layer === 'evidence') {
+    return (
+      <div className="flex flex-wrap gap-1 items-center text-sm">
+        <span>Of {summary.total} verified:</span>
+        {Object.entries(summary.labels).map(([k, count]) => (
+          <span key={k} className={`pill ${EVIDENCE_INFO[k]?.cls || 'bg-slate-100'}`}>
+            {EVIDENCE_INFO[k]?.short || k}: {count}
+          </span>
+        ))}
+      </div>
+    )
+  }
+
+  if (layer === 'consistency') {
+    if (summary.count === 0) return <span className="text-sm text-emerald-700">No contradictions found.</span>
+    return (
+      <div>
+        <span className="text-sm"><span className="font-medium">{summary.count}</span> contradiction{summary.count === 1 ? '' : 's'} flagged.</span>
+        {summary.examples?.length > 0 && (
+          <div className="mt-1 text-xs italic text-ink/70 border-l-2 border-sunrise-200 pl-2">
+            {summary.examples[0].desc.length > 160 ? summary.examples[0].desc.slice(0, 160) + '...' : summary.examples[0].desc}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  if (layer === 'steelman') {
+    const pct = Math.round((summary.score ?? 0) * 100)
+    return (
+      <div>
+        <div className="text-sm">Score: <span className="font-medium">{pct}%</span></div>
+        {summary.summary && (
+          <div className="text-xs text-ink/70 mt-1 italic">
+            {summary.summary.length > 220 ? summary.summary.slice(0, 220) + '...' : summary.summary}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return <span className="text-sm text-ink/60">Done.</span>
 }
