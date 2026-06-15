@@ -20,6 +20,7 @@ import {
   evidenceScore, consistencyScore, steelmanningScore,
   compositeScore, scoreToGrade, formatPct, DEFAULT_WEIGHTS
 } from '../lib/scoring.js'
+import { runFullAnalysis, PIPELINE_LAYERS } from '../lib/analyzerPipeline.js'
 
 export { LABEL_INFO, DISTORTION_INFO, FALLACY_INFO, EVIDENCE_INFO } // re-export for other components
 
@@ -765,13 +766,47 @@ function CompareProgramsView() {
   const [leftId, setLeftId]   = useState('')
   const [rightId, setRightId] = useState('')
 
+  // Per-side per-layer status. Keyed by layer key -> { status, error? }
+  // status: 'idle' | 'running' | 'done' | 'error'
+  const [leftStatus, setLeftStatus]   = useState({})
+  const [rightStatus, setRightStatus] = useState({})
+  const [running, setRunning] = useState(false)
+
   const analyzed = presentations.filter(p => p.transcript)
+  const leftPres  = presentations.find(p => p.id === leftId)
+  const rightPres = presentations.find(p => p.id === rightId)
+
+  function resetStatuses() {
+    const initial = Object.fromEntries(PIPELINE_LAYERS.map(l => [l.key, { status: 'pending' }]))
+    setLeftStatus(initial)
+    setRightStatus(initial)
+  }
+
+  function makeProgress(setter) {
+    return (key, status, info) => {
+      setter(prev => ({ ...prev, [key]: { status, error: status === 'error' ? info : undefined } }))
+    }
+  }
+
+  async function runBoth() {
+    if (!leftPres || !rightPres) return
+    setRunning(true)
+    resetStatuses()
+    try {
+      await Promise.all([
+        runFullAnalysis({ presentation: leftPres,  onProgress: makeProgress(setLeftStatus) }),
+        runFullAnalysis({ presentation: rightPres, onProgress: makeProgress(setRightStatus) })
+      ])
+    } finally {
+      setRunning(false)
+    }
+  }
 
   function Picker({ value, onChange, label, exclude }) {
     return (
       <div>
         <label className="label">{label}</label>
-        <select className="input" value={value} onChange={(e) => onChange(e.target.value)}>
+        <select className="input" value={value} onChange={(e) => onChange(e.target.value)} disabled={running}>
           <option value="">— Choose a program —</option>
           {analyzed.filter(p => p.id !== exclude).map(p => {
             const sp = speakers.find(s => s.id === p.speaker_id)
@@ -793,26 +828,46 @@ function CompareProgramsView() {
           <Picker value={leftId}  onChange={setLeftId}  label="Program A" exclude={rightId} />
           <Picker value={rightId} onChange={setRightId} label="Program B" exclude={leftId} />
         </div>
-        <div className="text-xs text-ink/60 mt-3">
-          Run as many layers as you'd like in single-program view first, then compare the scores side by side here.
+        <div className="flex items-center justify-between gap-3 mt-3 flex-wrap">
+          <div className="text-xs text-ink/60 max-w-md">
+            Pick two programs, then run all seven layers on both in parallel. Watch each layer
+            light up as Claude finishes it.
+          </div>
+          <button
+            className="btn-primary"
+            onClick={runBoth}
+            disabled={!leftId || !rightId || running}
+          >
+            {running ? 'Analyzing…' : 'Run full analysis on both'}
+          </button>
         </div>
       </section>
-
       {leftId && rightId && (
         <div className="grid sm:grid-cols-2 gap-4">
-          <ProgramStatsCard presentation={presentations.find(p => p.id === leftId)}  speakers={speakers} />
-          <ProgramStatsCard presentation={presentations.find(p => p.id === rightId)} speakers={speakers} />
+          <ProgramStatsCard
+            presentation={leftPres}
+            speakers={speakers}
+            layerStatus={leftStatus}
+            running={running}
+          />
+          <ProgramStatsCard
+            presentation={rightPres}
+            speakers={speakers}
+            layerStatus={rightStatus}
+            running={running}
+          />
         </div>
       )}
     </>
   )
 }
 
-function ProgramStatsCard({ presentation, speakers }) {
+function ProgramStatsCard({ presentation, speakers, layerStatus, running }) {
   const analysis = usePresentationAnalysis(presentation?.id)
   if (!presentation) return null
   const scores = computeScores(analysis)
   const sp = speakers.find(s => s.id === presentation.speaker_id)
+  const hasStatus = layerStatus && Object.keys(layerStatus).length > 0
 
   return (
     <div className="card">
@@ -824,11 +879,45 @@ function ProgramStatsCard({ presentation, speakers }) {
 
       <ScoreCard scores={scores} compact />
 
+      {hasStatus && <LayerProgress layerStatus={layerStatus} running={running} />}
+
       <div className="mt-4 grid grid-cols-2 gap-3 text-center">
         <Stat label="Facts" value={analysis.facts.length} />
         <Stat label="Fallacies" value={analysis.fallacies.length} />
         <Stat label="Consistency issues" value={analysis.issues.length} />
         <Stat label="Verified true" value={analysis.facts.filter(f => f.label === 'true').length} />
+      </div>
+    </div>
+  )
+}
+
+function LayerProgress({ layerStatus, running }) {
+  return (
+    <div className="mt-4">
+      <div className="text-[10px] uppercase tracking-wider text-ink/40 mb-1.5">Pipeline status</div>
+      <div className="grid grid-cols-7 gap-1">
+        {PIPELINE_LAYERS.map(layer => {
+          const st = layerStatus[layer.key] || { status: 'pending' }
+          const tone =
+            st.status === 'done'    ? 'bg-emerald-100 text-emerald-700 border-emerald-300' :
+            st.status === 'running' ? 'bg-amber-100 text-amber-700 border-amber-300 animate-pulse' :
+            st.status === 'error'   ? 'bg-red-100 text-red-700 border-red-300' :
+                                      'bg-sunrise-50 text-ink/40 border-sunrise-100'
+          const icon =
+            st.status === 'done'    ? '✓' :
+            st.status === 'running' ? '⋯' :
+            st.status === 'error'   ? '×' : '·'
+          return (
+            <div
+              key={layer.key}
+              title={st.error ? `${layer.label}: ${st.error}` : layer.label + (st.status !== 'pending' ? ` — ${st.status}` : '')}
+              className={`rounded border ${tone} px-1.5 py-1 text-center transition-colors`}
+            >
+              <div className="text-base leading-none">{icon}</div>
+              <div className="text-[9px] mt-0.5 truncate">{layer.label}</div>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
