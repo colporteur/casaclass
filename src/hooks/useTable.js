@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useId } from 'react'
 import { supabase } from '../lib/supabase.js'
 
 /**
@@ -7,6 +7,9 @@ import { supabase } from '../lib/supabase.js'
 export function useTable(table, opts = {}) {
   const { orderBy, ascending = true, filter } = opts
   const filterKey = filter ? JSON.stringify(filter) : ''
+  // Per-instance ID so multiple components subscribed to the same table/filter
+  // don't collide on channel names (Supabase requires unique channel names).
+  const instanceId = useId()
 
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
@@ -29,7 +32,7 @@ export function useTable(table, opts = {}) {
   useEffect(() => {
     fetchAll()
     const channel = supabase
-      .channel(`realtime:${table}:${filterKey}`)
+      .channel(`realtime:${table}:${filterKey}:${instanceId}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table },
@@ -39,7 +42,7 @@ export function useTable(table, opts = {}) {
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [table, filterKey, fetchAll])
+  }, [table, filterKey, fetchAll, instanceId])
 
   return { rows, loading, error, refresh: fetchAll }
 }

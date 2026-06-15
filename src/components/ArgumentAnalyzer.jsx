@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useId } from 'react'
 import { useTable } from '../hooks/useTable.js'
 import {
   supabase,
@@ -75,6 +75,9 @@ export default function ArgumentAnalyzer() {
 
 function usePresentationAnalysis(presentationId) {
   const filter = presentationId ? { presentation_id: presentationId } : null
+  // Per-instance ID so two components watching the same presentation don't
+  // collide on Supabase channel names.
+  const instanceId = useId()
 
   const { rows: facts, refresh: refreshFacts }         = useTable('extracted_facts',   { orderBy: 'ordinal', filter })
   const { rows: fallacies, refresh: refreshFallacies } = useTable('logical_fallacies', { orderBy: 'ordinal', filter })
@@ -100,14 +103,14 @@ function usePresentationAnalysis(presentationId) {
     refreshSteelman()
     if (!presentationId) return
     const ch = supabase
-      .channel(`steelman:${presentationId}`)
+      .channel(`steelman:${presentationId}:${instanceId}`)
       .on('postgres_changes',
         { event: '*', schema: 'public', table: 'steelman_assessments', filter: `presentation_id=eq.${presentationId}` },
         () => refreshSteelman()
       )
       .subscribe()
     return () => supabase.removeChannel(ch)
-  }, [presentationId])
+  }, [presentationId, instanceId])
 
   return {
     facts, refreshFacts,
