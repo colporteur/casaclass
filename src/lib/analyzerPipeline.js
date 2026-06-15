@@ -1,15 +1,8 @@
 // Argument Analyzer pipeline.
-//
-// Each layer is a standalone async function that mutates the per-program
-// `state` object (carrying forward facts, labels, etc.) and returns a
-// structured `summary` the UI can render.
-//
-// Two top-level orchestrators:
-//   - runFullAnalysis: runs every layer for ONE program (independent layers
-//     fan out in parallel).
-//   - runComparativeAnalysis: walks layers in order, alternating A then B
-//     within each layer. Slower wall clock but very legible -- ideal for
-//     watching the comparison unfold step by step.
+// Each layer is a standalone async function that mutates a per-program
+// `state` object and returns a structured `summary` the UI can render.
+// Layers lazy-fetch their prerequisites from the DB so they can be called
+// individually (manual mode) or in sequence (orchestrators below).
 
 import {
   supabase,
@@ -35,9 +28,20 @@ async function callFn(url, body) {
   return res.json()
 }
 
+// Lazy-load facts for the presentation into state.facts (with current labels).
+async function ensureFacts(presentation, state) {
+  if (state.facts) return state.facts
+  const { data, error } = await supabase
+    .from('extracted_facts').select('*')
+    .eq('presentation_id', presentation.id)
+    .order('ordinal', { ascending: true })
+  if (error) throw error
+  state.facts = data || []
+  return state.facts
+}
+
 // ---------------------------------------------------------------------------
-// Layer implementations. Each mutates `state` and returns a `summary` object.
-// state shape: { facts: [...] }  (other layers don't need carry-forward state)
+// Layer implementations
 // ---------------------------------------------------------------------------
 
 async function layerExtract(presentation, state) {
@@ -56,7 +60,7 @@ async function layerExtract(presentation, state) {
 }
 
 async function layerVerify(presentation, state) {
-  const facts = state.facts || []
+  const facts = await ensureFacts(presentation, state)
   if (facts.length === 0) throw new Error('No facts to verify (run extract first)')
   const BATCH = 20
   const labels = {}
@@ -104,7 +108,8 @@ async function layerFallacies(presentation, state) {
 }
 
 async function layerDistortion(presentation, state) {
-  const verified = (state.facts || []).filter(f => f.label === 'true')
+  const facts = await ensureFacts(presentation, state)
+  const verified = facts.filter(f => f.label === 'true')
   if (verified.length === 0) return { total: 0, labels: {}, skipped: true }
   const BATCH = 15
   const labels = {}
@@ -130,7 +135,8 @@ async function layerDistortion(presentation, state) {
 }
 
 async function layerEvidence(presentation, state) {
-  const verified = (state.facts || []).filter(f => f.label === 'true')
+  const facts = await ensureFacts(presentation, state)
+  const verified = facts.filter(f => f.label === 'true')
   if (verified.length === 0) return { total: 0, labels: {}, skipped: true }
   const BATCH = 15
   const labels = {}
@@ -156,7 +162,7 @@ async function layerEvidence(presentation, state) {
 }
 
 async function layerConsistency(presentation, state) {
-  const facts = state.facts || []
+  const facts = await ensureFacts(presentation, state)
   if (facts.length === 0) return { count: 0, examples: [] }
   const { issues } = await callFn(CHECK_CONSISTENCY_URL, {
     transcript: presentation.transcript,
@@ -197,7 +203,7 @@ async function layerSteelman(presentation, state) {
 }
 
 // ---------------------------------------------------------------------------
-// Layer registry (also exposed for UI status tiles)
+// Layer registry
 // ---------------------------------------------------------------------------
 
 const LAYER_DEFS = [
@@ -213,9 +219,26 @@ const LAYER_DEFS = [
 export const PIPELINE_LAYERS = LAYER_DEFS.map(({ key, label }) => ({ key, label }))
 
 // ---------------------------------------------------------------------------
+// Single-layer runner (manual mode)
+// ---------------------------------------------------------------------------
+
+/**
+ * Run a single layer on a single presentation.
+ * @param {Object} opts
+ * @param {Object} opts.presentation
+ * @param {string} opts.layerKey
+ * @param {Object} [opts.state]  Optional carry-forward state. If absent the
+ *                               layer lazy-fetches facts from the DB.
+ * @returns {Promise<Object>} The layer's summary object.
+ */
+export async function runSingleLayer({ presentation, layerKey, state = {} }) {
+  const layer = LAYER_DEFS.find(l => l.key === layerKey)
+  if (!layer) throw new Error(`Unknown layer: ${layerKey}`)
+  return layer.fn(presentation, state)
+}
+
+// ---------------------------------------------------------------------------
 // Comparative orchestrator: layer-by-layer, A then B within each layer.
-// Callbacks: onLayerStart(side, key); onLayerResult(side, key, summary);
-//            onLayerError(side, key, message)
 // ---------------------------------------------------------------------------
 
 export async function runComparativeAnalysis({
@@ -237,15 +260,13 @@ export async function runComparativeAnalysis({
         onLayerResult(side, layer.key, summary)
       } catch (e) {
         onLayerError(side, layer.key, String(e.message || e))
-        // Continue to next side/layer; dependents may also fail but that's fine.
       }
     }
   }
 }
 
 // ---------------------------------------------------------------------------
-// Legacy parallel orchestrator (kept for any other caller that wants speed
-// over drama). Used internally by tests; not currently in the UI.
+// Legacy parallel orchestrator (still exported for completeness).
 // ---------------------------------------------------------------------------
 
 export async function runFullAnalysis({ presentation, onProgress = () => {} }) {

@@ -20,7 +20,7 @@ import {
   evidenceScore, consistencyScore, steelmanningScore,
   compositeScore, scoreToGrade, formatPct, DEFAULT_WEIGHTS
 } from '../lib/scoring.js'
-import { runFullAnalysis, runComparativeAnalysis, PIPELINE_LAYERS } from '../lib/analyzerPipeline.js'
+import { runFullAnalysis, runComparativeAnalysis, runSingleLayer, PIPELINE_LAYERS } from '../lib/analyzerPipeline.js'
 
 export { LABEL_INFO, DISTORTION_INFO, FALLACY_INFO, EVIDENCE_INFO } // re-export for other components
 
@@ -831,6 +831,30 @@ function CompareProgramsView() {
     }
   }
 
+  // Run one layer on both programs, A then B.
+  async function runOneLayer(layerKey) {
+    if (!leftPres || !rightPres) return
+    setRunning(true)
+    for (const [side, pres, setter] of [
+      ['A', leftPres, setLeftStatus],
+      ['B', rightPres, setRightStatus]
+    ]) {
+      setter(prev => ({ ...prev, [layerKey]: { status: 'running' } }))
+      setActive({ side, layer: layerKey })
+      try {
+        const summary = await runSingleLayer({ presentation: pres, layerKey })
+        setter(prev => ({ ...prev, [layerKey]: { status: 'done' } }))
+        setFeed(prev => [...prev, { side, layer: layerKey, summary, status: 'done', ts: Date.now() }])
+      } catch (e) {
+        const err = String(e.message || e)
+        setter(prev => ({ ...prev, [layerKey]: { status: 'error', error: err } }))
+        setFeed(prev => [...prev, { side, layer: layerKey, summary: { error: err }, status: 'error', ts: Date.now() }])
+      }
+    }
+    setRunning(false)
+    setActive(null)
+  }
+
   function Picker({ value, onChange, label, exclude }) {
     return (
       <div>
@@ -871,6 +895,35 @@ function CompareProgramsView() {
           </button>
         </div>
       </section>
+      {leftId && rightId && (
+        <section className="card">
+          <div className="mb-2">
+            <h2 className="font-display text-lg">Manual step-through</h2>
+            <p className="text-xs text-ink/60">
+              Run one layer at a time on both programs. Inspect the details below before moving on.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+            {PIPELINE_LAYERS.map((layer, i) => {
+              const leftDone  = leftStatus[layer.key]?.status === 'done'
+              const rightDone = rightStatus[layer.key]?.status === 'done'
+              const bothDone = leftDone && rightDone
+              return (
+                <button
+                  key={layer.key}
+                  className={`btn ${bothDone ? 'btn-secondary' : 'btn-primary'} text-sm justify-center`}
+                  onClick={() => runOneLayer(layer.key)}
+                  disabled={running}
+                  title={bothDone ? 'Re-run this layer' : `Run layer ${i + 1} on both programs`}
+                >
+                  {i + 1}. {layer.label}
+                </button>
+              )
+            })}
+          </div>
+        </section>
+      )}
+
       {active && (
         <section className="card-tint">
           <div className="flex items-center gap-3">
@@ -906,6 +959,10 @@ function CompareProgramsView() {
         </div>
       )}
 
+      {leftId && rightId && (
+        <ComparisonDetails leftPres={leftPres} rightPres={rightPres} />
+      )}
+
       {feed.length > 0 && (
         <section className="card">
           <h2 className="font-display text-xl mb-3">Live analysis feed</h2>
@@ -920,122 +977,165 @@ function CompareProgramsView() {
   )
 }
 
-function FeedEntry({ entry }) {
-  const sideClass = entry.side === 'A'
-    ? 'bg-emerald-100 text-emerald-700'
-    : 'bg-purple-100 text-purple-700'
-  const layerLabel = PIPELINE_LAYERS.find(l => l.key === entry.layer)?.label || entry.layer
+// ---------------------------------------------------------------------------
+// Side-by-side details panel: tabs for facts, fallacies, issues, steelman.
+// ---------------------------------------------------------------------------
+
+function ComparisonDetails({ leftPres, rightPres }) {
+  const [tab, setTab] = useState('facts')
+  if (!leftPres || !rightPres) return null
+
+  const tabs = [
+    { key: 'facts',     label: 'Facts' },
+    { key: 'fallacies', label: 'Fallacies' },
+    { key: 'issues',    label: 'Consistency' },
+    { key: 'steelman',  label: 'Steelman' }
+  ]
+
   return (
-    <li className="py-2.5 flex items-start gap-3 flex-wrap">
-      <span className={`pill ${sideClass} font-bold shrink-0`}>{entry.side}</span>
-      <span className="text-sm font-medium w-24 shrink-0">{layerLabel}</span>
-      <div className="flex-1 min-w-0">
-        <FeedSummary layer={entry.layer} summary={entry.summary} status={entry.status} />
+    <section className="card">
+      <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+        <h2 className="font-display text-xl">Side-by-side details</h2>
+        <div className="inline-flex gap-1 bg-sunrise-50 rounded-full p-1 border border-sunrise-200">
+          {tabs.map(t => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={`px-3 py-1 rounded-full text-xs font-medium transition ${
+                tab === t.key ? 'bg-white text-sunrise-700 shadow-warm' : 'text-ink/60 hover:text-sunrise-700'
+              }`}
+            >{t.label}</button>
+          ))}
+        </div>
       </div>
-    </li>
+      <div className="grid sm:grid-cols-2 gap-4">
+        <DetailsColumn presentation={leftPres}  sideLabel="A" tab={tab} />
+        <DetailsColumn presentation={rightPres} sideLabel="B" tab={tab} />
+      </div>
+    </section>
   )
 }
 
-function FeedSummary({ layer, summary, status }) {
-  if (status === 'error' || summary?.error) {
-    return <span className="text-sm text-red-600">Error: {summary?.error || 'failed'}</span>
-  }
-  if (summary?.skipped) {
-    return <span className="text-sm text-ink/50 italic">Skipped (nothing to analyze)</span>
-  }
-  if (layer === 'extract') {
-    return <span className="text-sm">Extracted <span className="font-medium">{summary.count}</span> fact{summary.count === 1 ? '' : 's'}.</span>
-  }
+function DetailsColumn({ presentation, sideLabel, tab }) {
+  const analysis = usePresentationAnalysis(presentation.id)
+  const sideClass = sideLabel === 'A' ? 'bg-emerald-100 text-emerald-700' : 'bg-purple-100 text-purple-700'
 
-  if (layer === 'verify') {
-    return (
-      <div className="flex flex-wrap gap-1 items-center text-sm">
-        <span>Of {summary.total}:</span>
-        {Object.entries(summary.labels).map(([k, count]) => (
-          <span key={k} className={`pill ${LABEL_INFO[k]?.cls || 'bg-slate-100'}`}>
-            {LABEL_INFO[k]?.short || k}: {count}
-          </span>
-        ))}
+  return (
+    <div className="border border-sunrise-100 rounded-2xl p-3 bg-sunrise-50/30">
+      <div className="flex items-center gap-2 mb-3">
+        <span className={`pill ${sideClass} font-bold`}>Program {sideLabel}</span>
+        <span className="text-xs text-ink/60 truncate">
+          {presentation.topic_title || '(Untitled)'}
+        </span>
       </div>
-    )
-  }
+      {tab === 'facts'     && <FactsDetail     facts={analysis.facts} />}
+      {tab === 'fallacies' && <FallaciesDetail fallacies={analysis.fallacies} />}
+      {tab === 'issues'    && <IssuesDetail    issues={analysis.issues} />}
+      {tab === 'steelman'  && <SteelmanDetail  s={analysis.steelman} />}
+    </div>
+  )
+}
 
-  if (layer === 'fallacies') {
-    if (summary.count === 0) return <span className="text-sm text-emerald-700">No fallacies found.</span>
-    return (
-      <div>
-        <div className="flex flex-wrap gap-1 items-center text-sm">
-          <span><span className="font-medium">{summary.count}</span> found:</span>
-          {Object.entries(summary.types).map(([k, count]) => (
-            <span key={k} className={`pill ${FALLACY_INFO[k]?.cls || 'bg-slate-100'}`}>
-              {FALLACY_INFO[k]?.short || k}: {count}
-            </span>
-          ))}
+function FactsDetail({ facts }) {
+  if (!facts.length) return <div className="text-xs text-ink/50">No facts extracted yet.</div>
+  return (
+    <ul className="space-y-2 max-h-[480px] overflow-y-auto">
+      {facts.map((f, i) => {
+        const v  = f.label ? LABEL_INFO[f.label] : null
+        const d  = f.distortion_label ? DISTORTION_INFO[f.distortion_label] : null
+        const ev = f.evidence_quality_label ? EVIDENCE_INFO[f.evidence_quality_label] : null
+        return (
+          <li key={f.id} className="border-b border-sunrise-100 last:border-0 pb-2">
+            <div className="text-xs leading-snug">
+              <span className="text-ink/40 font-mono">{i + 1}.</span> {f.fact_text}
+            </div>
+            <div className="mt-1 flex flex-wrap gap-1">
+              {v  && <span className={`pill ${v.cls}`}>{v.short}</span>}
+              {d  && <span className={`pill ${d.cls}`}>D: {d.short}</span>}
+              {ev && <span className={`pill ${ev.cls}`}>E: {ev.short}</span>}
+              {!v && !d && !ev && <span className="text-[10px] text-ink/40">— unlabeled</span>}
+            </div>
+            {f.reasoning && (
+              <div className="text-[10px] text-ink/60 mt-1 italic">{f.reasoning}</div>
+            )}
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
+function FallaciesDetail({ fallacies }) {
+  if (!fallacies.length) return <div className="text-xs text-ink/50">No fallacies detected yet (or none found).</div>
+  return (
+    <ul className="space-y-2 max-h-[480px] overflow-y-auto">
+      {fallacies.map(f => {
+        const info = FALLACY_INFO[f.fallacy_type]
+        const sev  = SEVERITY_INFO[f.severity] || SEVERITY_INFO.moderate
+        return (
+          <li key={f.id} className="border-b border-sunrise-100 last:border-0 pb-2">
+            <div className="flex flex-wrap gap-1 mb-1">
+              <span className={`pill ${info?.cls || 'bg-slate-100'}`}>{info?.short || f.fallacy_type}</span>
+              <span className={`pill ${sev.cls}`}>{sev.display}</span>
+            </div>
+            <div className="text-xs italic border-l-2 border-sunrise-200 pl-2 text-ink/80">
+              "{f.passage_quote.length > 160 ? f.passage_quote.slice(0, 160) + '…' : f.passage_quote}"
+            </div>
+            {f.explanation && (
+              <div className="text-[10px] text-ink/60 mt-1">{f.explanation}</div>
+            )}
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
+function IssuesDetail({ issues }) {
+  if (!issues.length) return <div className="text-xs text-ink/50">No contradictions detected yet (or none found).</div>
+  return (
+    <ul className="space-y-2 max-h-[480px] overflow-y-auto">
+      {issues.map(i => {
+        const sev = SEVERITY_INFO[i.severity] || SEVERITY_INFO.moderate
+        return (
+          <li key={i.id} className="border-b border-sunrise-100 last:border-0 pb-2">
+            <div className="flex gap-1 mb-1">
+              <span className={`pill ${sev.cls}`}>{sev.display}</span>
+            </div>
+            <div className="text-xs">{i.description}</div>
+            {(i.fact_a || i.fact_b) && (
+              <div className="text-[10px] text-ink/60 mt-1 grid grid-cols-2 gap-1">
+                {i.fact_a && <div className="border-l-2 border-sunrise-200 pl-1">A: {i.fact_a}</div>}
+                {i.fact_b && <div className="border-l-2 border-sunrise-200 pl-1">B: {i.fact_b}</div>}
+              </div>
+            )}
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
+function SteelmanDetail({ s }) {
+  if (!s) return <div className="text-xs text-ink/50">No steelman assessment yet.</div>
+  return (
+    <div className="text-xs space-y-2">
+      <span className="pill bg-indigo-100 text-indigo-700">Score: {Math.round(Number(s.score) * 100)}%</span>
+      {s.summary && <p>{s.summary}</p>}
+      {s.engaged_views && (
+        <div className="border-l-2 border-emerald-200 pl-2">
+          <div className="text-[10px] uppercase tracking-wider text-ink/50 mb-0.5">Engaged</div>
+          <div className="whitespace-pre-wrap">{s.engaged_views}</div>
         </div>
-        {summary.examples?.length > 0 && (
-          <div className="mt-1 text-xs italic text-ink/70 border-l-2 border-sunrise-200 pl-2">
-            "{summary.examples[0].quote.length > 140 ? summary.examples[0].quote.slice(0, 140) + '...' : summary.examples[0].quote}"
-          </div>
-        )}
-      </div>
-    )
-  }
-
-  if (layer === 'distortion') {
-    return (
-      <div className="flex flex-wrap gap-1 items-center text-sm">
-        <span>Of {summary.total} verified:</span>
-        {Object.entries(summary.labels).map(([k, count]) => (
-          <span key={k} className={`pill ${DISTORTION_INFO[k]?.cls || 'bg-slate-100'}`}>
-            {DISTORTION_INFO[k]?.short || k}: {count}
-          </span>
-        ))}
-      </div>
-    )
-  }
-
-  if (layer === 'evidence') {
-    return (
-      <div className="flex flex-wrap gap-1 items-center text-sm">
-        <span>Of {summary.total} verified:</span>
-        {Object.entries(summary.labels).map(([k, count]) => (
-          <span key={k} className={`pill ${EVIDENCE_INFO[k]?.cls || 'bg-slate-100'}`}>
-            {EVIDENCE_INFO[k]?.short || k}: {count}
-          </span>
-        ))}
-      </div>
-    )
-  }
-
-  if (layer === 'consistency') {
-    if (summary.count === 0) return <span className="text-sm text-emerald-700">No contradictions found.</span>
-    return (
-      <div>
-        <span className="text-sm"><span className="font-medium">{summary.count}</span> contradiction{summary.count === 1 ? '' : 's'} flagged.</span>
-        {summary.examples?.length > 0 && (
-          <div className="mt-1 text-xs italic text-ink/70 border-l-2 border-sunrise-200 pl-2">
-            {summary.examples[0].desc.length > 160 ? summary.examples[0].desc.slice(0, 160) + '...' : summary.examples[0].desc}
-          </div>
-        )}
-      </div>
-    )
-  }
-
-  if (layer === 'steelman') {
-    const pct = Math.round((summary.score ?? 0) * 100)
-    return (
-      <div>
-        <div className="text-sm">Score: <span className="font-medium">{pct}%</span></div>
-        {summary.summary && (
-          <div className="text-xs text-ink/70 mt-1 italic">
-            {summary.summary.length > 220 ? summary.summary.slice(0, 220) + '...' : summary.summary}
-          </div>
-        )}
-      </div>
-    )
-  }
-
-  return <span className="text-sm text-ink/60">Done.</span>
+      )}
+      {s.omitted_views && (
+        <div className="border-l-2 border-red-200 pl-2">
+          <div className="text-[10px] uppercase tracking-wider text-ink/50 mb-0.5">Missed</div>
+          <div className="whitespace-pre-wrap">{s.omitted_views}</div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function ProgramStatsCard({ presentation, speakers, layerStatus, running, sideLabel }) {
@@ -1112,6 +1212,117 @@ function Stat({ label, value }) {
       <div className="text-[10px] uppercase tracking-wider text-ink/50 mt-1">{label}</div>
     </div>
   )
+}
+
+function FeedEntry({ entry }) {
+  const sideClass = entry.side === 'A'
+    ? 'bg-emerald-100 text-emerald-700'
+    : 'bg-purple-100 text-purple-700'
+  const layerLabel = PIPELINE_LAYERS.find(l => l.key === entry.layer)?.label || entry.layer
+  return (
+    <li className="py-2.5 flex items-start gap-3 flex-wrap">
+      <span className={`pill ${sideClass} font-bold shrink-0`}>{entry.side}</span>
+      <span className="text-sm font-medium w-24 shrink-0">{layerLabel}</span>
+      <div className="flex-1 min-w-0">
+        <FeedSummary layer={entry.layer} summary={entry.summary} status={entry.status} />
+      </div>
+    </li>
+  )
+}
+
+function FeedSummary({ layer, summary, status }) {
+  if (status === 'error' || summary?.error) {
+    return <span className="text-sm text-red-600">Error: {summary?.error || 'failed'}</span>
+  }
+  if (summary?.skipped) {
+    return <span className="text-sm text-ink/50 italic">Skipped (nothing to analyze)</span>
+  }
+  if (layer === 'extract') {
+    return <span className="text-sm">Extracted <span className="font-medium">{summary.count}</span> fact{summary.count === 1 ? '' : 's'}.</span>
+  }
+  if (layer === 'verify') {
+    return (
+      <div className="flex flex-wrap gap-1 items-center text-sm">
+        <span>Of {summary.total}:</span>
+        {Object.entries(summary.labels).map(([k, count]) => (
+          <span key={k} className={`pill ${LABEL_INFO[k]?.cls || 'bg-slate-100'}`}>
+            {LABEL_INFO[k]?.short || k}: {count}
+          </span>
+        ))}
+      </div>
+    )
+  }
+  if (layer === 'fallacies') {
+    if (summary.count === 0) return <span className="text-sm text-emerald-700">No fallacies found.</span>
+    return (
+      <div>
+        <div className="flex flex-wrap gap-1 items-center text-sm">
+          <span><span className="font-medium">{summary.count}</span> found:</span>
+          {Object.entries(summary.types).map(([k, count]) => (
+            <span key={k} className={`pill ${FALLACY_INFO[k]?.cls || 'bg-slate-100'}`}>
+              {FALLACY_INFO[k]?.short || k}: {count}
+            </span>
+          ))}
+        </div>
+        {summary.examples?.length > 0 && (
+          <div className="mt-1 text-xs italic text-ink/70 border-l-2 border-sunrise-200 pl-2">
+            "{summary.examples[0].quote.length > 140 ? summary.examples[0].quote.slice(0, 140) + '...' : summary.examples[0].quote}"
+          </div>
+        )}
+      </div>
+    )
+  }
+  if (layer === 'distortion') {
+    return (
+      <div className="flex flex-wrap gap-1 items-center text-sm">
+        <span>Of {summary.total} verified:</span>
+        {Object.entries(summary.labels).map(([k, count]) => (
+          <span key={k} className={`pill ${DISTORTION_INFO[k]?.cls || 'bg-slate-100'}`}>
+            {DISTORTION_INFO[k]?.short || k}: {count}
+          </span>
+        ))}
+      </div>
+    )
+  }
+  if (layer === 'evidence') {
+    return (
+      <div className="flex flex-wrap gap-1 items-center text-sm">
+        <span>Of {summary.total} verified:</span>
+        {Object.entries(summary.labels).map(([k, count]) => (
+          <span key={k} className={`pill ${EVIDENCE_INFO[k]?.cls || 'bg-slate-100'}`}>
+            {EVIDENCE_INFO[k]?.short || k}: {count}
+          </span>
+        ))}
+      </div>
+    )
+  }
+  if (layer === 'consistency') {
+    if (summary.count === 0) return <span className="text-sm text-emerald-700">No contradictions found.</span>
+    return (
+      <div>
+        <span className="text-sm"><span className="font-medium">{summary.count}</span> contradiction{summary.count === 1 ? '' : 's'} flagged.</span>
+        {summary.examples?.length > 0 && (
+          <div className="mt-1 text-xs italic text-ink/70 border-l-2 border-sunrise-200 pl-2">
+            {summary.examples[0].desc.length > 160 ? summary.examples[0].desc.slice(0, 160) + '...' : summary.examples[0].desc}
+          </div>
+        )}
+      </div>
+    )
+  }
+  if (layer === 'steelman') {
+    const pct = Math.round((summary.score ?? 0) * 100)
+    return (
+      <div>
+        <div className="text-sm">Score: <span className="font-medium">{pct}%</span></div>
+        {summary.summary && (
+          <div className="text-xs text-ink/70 mt-1 italic">
+            {summary.summary.length > 220 ? summary.summary.slice(0, 220) + '...' : summary.summary}
+          </div>
+        )}
+      </div>
+    )
+  }
+  return <span className="text-sm text-ink/60">Done.</span>
 }
 
 // ---------------------------------------------------------------------------
