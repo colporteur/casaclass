@@ -15,8 +15,12 @@ export const supabase = createClient(url ?? '', anonKey ?? '', {
   auth: { persistSession: false }
 })
 
+const FUNCTION_BASE = url ? `${url}/functions/v1` : ''
+
 export const SUMMARIZE_FUNCTION_URL =
-  import.meta.env.VITE_SUMMARIZE_FUNCTION_URL ??
-  (url ? `${url}/functions/v1/summarize` : '')
+  import.meta.env.VITE_SUMMARIZE_FUNCTION_URL ?? `${FUNCTION_BASE}/summarize`
+
+export const EXTRACT_FACTS_URL = `${FUNCTION_BASE}/extract-facts`
+export const VERIFY_FACTS_URL  = `${FUNCTION_BASE}/verify-facts`
 
 export const SUPABASE_ANON_KEY = anonKey ?? ''

@@ -5,3 +5,9 @@ project_id = "casa-class"
 
 [functions.summarize]
 verify_jwt = false
+
+[functions.extract-facts]
+verify_jwt = false
+
+[functions.verify-facts]
+verify_jwt = false

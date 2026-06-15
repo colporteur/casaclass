@@ -5,6 +5,7 @@ import Calendar from './components/Calendar.jsx'
 import PresentationDetail from './components/PresentationDetail.jsx'
 import Topics from './components/Topics.jsx'
 import History from './components/History.jsx'
+import ArgumentAnalyzer from './components/ArgumentAnalyzer.jsx'
 import NameBadge from './components/NameBadge.jsx'
 
 function NavItem({ to, label }) {
@@ -46,6 +47,7 @@ export default function App() {
             <NavItem to="/speakers"  label="Speakers" />
             <NavItem to="/topics"    label="Topics" />
             <NavItem to="/history"   label="History" />
+            <NavItem to="/analyzer"  label="Analyzer" />
           </div>
         </nav>
       </header>
@@ -57,6 +59,7 @@ export default function App() {
           <Route path="/speakers"               element={<Speakers />} />
           <Route path="/topics"                 element={<Topics />} />
           <Route path="/history"                element={<History />} />
+          <Route path="/analyzer"               element={<ArgumentAnalyzer />} />
           <Route path="/presentation/:id"       element={<PresentationDetail />} />
           <Route path="*"                       element={<Dashboard />} />
         </Routes>
