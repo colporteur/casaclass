@@ -1113,3 +1113,15 @@ function Stat({ label, value }) {
     </div>
   )
 }
+
+// ---------------------------------------------------------------------------
+// Shared helper: wipe all analysis data for a presentation.
+// ---------------------------------------------------------------------------
+
+export async function clearAnalysisForPresentation(presentationId) {
+  if (!presentationId) return
+  await supabase.from('extracted_facts').delete().eq('presentation_id', presentationId)
+  await supabase.from('logical_fallacies').delete().eq('presentation_id', presentationId)
+  await supabase.from('consistency_issues').delete().eq('presentation_id', presentationId)
+  await supabase.from('steelman_assessments').delete().eq('presentation_id', presentationId)
+}
