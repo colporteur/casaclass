@@ -1,4 +1,5 @@
 import { useState, useEffect, useId } from 'react'
+import { Link } from 'react-router-dom'
 import { useTable } from '../hooks/useTable.js'
 import {
   supabase,
@@ -43,7 +44,10 @@ export default function ArgumentAnalyzer() {
   return (
     <div className="space-y-6">
       <section className="card">
-        <h1 className="font-display text-2xl mb-1">Argument Analyzer</h1>
+        <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
+          <h1 className="font-display text-2xl">Argument Analyzer</h1>
+          <Link to="/analyzer/rubric" className="btn-ghost text-sm underline">View grading rubric →</Link>
+        </div>
         <p className="text-sm text-ink/60 mb-3">
           Six layers of analysis -- verification, distortion, fallacies, evidence quality,
           internal consistency, and steelmanning -- combined into a composite score.

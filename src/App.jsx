@@ -6,6 +6,7 @@ import PresentationDetail from './components/PresentationDetail.jsx'
 import Topics from './components/Topics.jsx'
 import History from './components/History.jsx'
 import ArgumentAnalyzer from './components/ArgumentAnalyzer.jsx'
+import AnalyzerRubric from './components/AnalyzerRubric.jsx'
 import NameBadge from './components/NameBadge.jsx'
 
 function NavItem({ to, label }) {
@@ -60,6 +61,7 @@ export default function App() {
           <Route path="/topics"                 element={<Topics />} />
           <Route path="/history"                element={<History />} />
           <Route path="/analyzer"               element={<ArgumentAnalyzer />} />
+          <Route path="/analyzer/rubric"        element={<AnalyzerRubric />} />
           <Route path="/presentation/:id"       element={<PresentationDetail />} />
           <Route path="*"                       element={<Dashboard />} />
         </Routes>
