@@ -498,11 +498,27 @@ function AnalysisSummaryCard({ presentationId }) {
   const { rows: issues }    = useTable('consistency_issues',{ orderBy: 'ordinal', filter: { presentation_id: presentationId } })
   const [steelman, setSteelman] = useState(null)
 
+  async function refreshSteelman() {
+    const { data } = await supabase
+      .from('steelman_assessments')
+      .select('*')
+      .eq('presentation_id', presentationId)
+      .maybeSingle()
+    setSteelman(data ?? null)
+  }
+
   useEffect(() => {
-    let cancelled = false
-    supabase.from('steelman_assessments').select('*').eq('presentation_id', presentationId).maybeSingle()
-      .then(({ data }) => { if (!cancelled) setSteelman(data ?? null) })
-    return () => { cancelled = true }
+    refreshSteelman()
+    // Subscribe to changes so a "Clear analysis" wipes the card here too.
+    const ch = supabase
+      .channel(`pres-summary-steelman:${presentationId}`)
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'steelman_assessments', filter: `presentation_id=eq.${presentationId}` },
+        () => refreshSteelman()
+      )
+      .subscribe()
+    return () => supabase.removeChannel(ch)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presentationId])
 
   if (facts.length === 0 && fallacies.length === 0 && issues.length === 0 && !steelman) return null
@@ -536,6 +552,9 @@ function AnalysisSummaryCard({ presentationId }) {
             onClick={async () => {
               if (!confirm('Clear ALL analysis data for this program? This deletes extracted facts, fallacies, consistency issues, and the steelman assessment. The transcript and AI summary are not affected.')) return
               await clearAnalysisForPresentation(presentationId)
+              // Locally drop steelman state so the card disappears immediately,
+              // rather than waiting for the realtime event to fire.
+              setSteelman(null)
             }}
           >Clear analysis</button>
           <Link to="/analyzer" className="btn-secondary text-sm">Open in Analyzer</Link>
