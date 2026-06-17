@@ -237,8 +237,11 @@ function AnalyzerWorkspace({ presentation, speakers }) {
   const [error, setError] = useState('')
 
   const sp = speakers.find(s => s.id === presentation.speaker_id)
-  const unverified            = facts.filter(f => !f.label)
-  const verifiedTrue          = facts.filter(f => f.label === 'true')
+  // Excluded facts are skipped by all batch operations and scoring.
+  const activeFacts           = facts.filter(f => !f.excluded)
+  const excludedCount         = facts.length - activeFacts.length
+  const unverified            = activeFacts.filter(f => !f.label)
+  const verifiedTrue          = activeFacts.filter(f => f.label === 'true')
   const undistortion          = verifiedTrue.filter(f => !f.distortion_label)
   const unevidenced           = verifiedTrue.filter(f => !f.evidence_quality_label)
   const fallaciesAnalyzed     = analysis.fallacies != null && analysis.fallacies !== undefined  // table will return [] if analyzed (we track via separate flag)
@@ -455,10 +458,15 @@ function AnalyzerWorkspace({ presentation, speakers }) {
       >
         {facts.length === 0
           ? <div className="text-sm text-ink/60">No facts yet.</div>
-          : <div className="text-sm text-ink/70">{facts.length} fact{facts.length === 1 ? '' : 's'} extracted.</div>}
+          : (
+            <div className="text-sm text-ink/70">
+              {facts.length} fact{facts.length === 1 ? '' : 's'} extracted
+              {excludedCount > 0 && <span className="text-ink/50"> · {excludedCount} excluded from analysis</span>}.
+            </div>
+          )}
       </StepCard>
 
-      {facts.length > 0 && (
+      {activeFacts.length > 0 && (
         <StepCard
           n={2} title="Verify (layer 1)"
           subtitle="Labels each fact True / False / Partly true / etc."
@@ -466,7 +474,7 @@ function AnalyzerWorkspace({ presentation, speakers }) {
           busy={busy === 'verify'} disabled={busy !== '' || unverified.length === 0}
           onAction={verifyFacts}
         >
-          <LabelDistribution items={facts} info={LABEL_INFO} field="label" />
+          <LabelDistribution items={activeFacts} info={LABEL_INFO} field="label" />
         </StepCard>
       )}
 
@@ -695,7 +703,7 @@ function FactRow({ fact, ordinal, onUpdate, onDelete }) {
   }
 
   return (
-    <li className="py-3">
+    <li className={`py-3 ${fact.excluded ? 'opacity-50' : ''}`}>
       <div className="flex items-start gap-3">
         <span className="text-xs text-ink/40 font-mono pt-0.5 w-6 text-right shrink-0">{ordinal}.</span>
         <div className="flex-1 min-w-0">
@@ -703,10 +711,16 @@ function FactRow({ fact, ordinal, onUpdate, onDelete }) {
             <textarea className="input text-sm" rows={2} value={draftText}
               onChange={(e) => setDraftText(e.target.value)} onBlur={saveText} autoFocus />
           ) : (
-            <div className="text-sm cursor-text leading-relaxed"
+            <div className={`text-sm cursor-text leading-relaxed ${fact.excluded ? 'line-through' : ''}`}
               onClick={() => { setDraftText(fact.fact_text); setEditingText(true) }}
               title="Click to edit">
               {fact.fact_text}
+            </div>
+          )}
+
+          {fact.excluded && (
+            <div className="mt-1 text-xs text-amber-700 italic">
+              Excluded from analysis — won't be sent to Claude or counted in scores.
             </div>
           )}
 
@@ -757,7 +771,14 @@ function FactRow({ fact, ordinal, onUpdate, onDelete }) {
             </div>
           )}
         </div>
-        <button className="btn-ghost text-xs" onClick={onDelete}>Remove</button>
+        <div className="flex flex-col items-end gap-1 shrink-0">
+          <button
+            className={`btn-ghost text-xs ${fact.excluded ? 'text-emerald-700' : 'text-amber-700'}`}
+            onClick={() => onUpdate({ excluded: !fact.excluded })}
+            title={fact.excluded ? 'Include this fact in analysis' : 'Exclude this fact from analysis'}
+          >{fact.excluded ? 'Include' : 'Exclude'}</button>
+          <button className="btn-ghost text-xs" onClick={onDelete}>Remove</button>
+        </div>
       </div>
     </li>
   )

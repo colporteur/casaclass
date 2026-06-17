@@ -63,6 +63,7 @@ export function verificationScore(facts) {
   let weightedSum = 0
   let denominator = 0
   for (const f of facts) {
+    if (f.excluded) continue
     if (!f.label) continue
     if (f.label === 'unverifiable') continue
     denominator++
@@ -74,7 +75,7 @@ export function verificationScore(facts) {
 
 export function distortionScore(facts) {
   if (!facts?.length) return null
-  const targets = facts.filter(f => f.label === 'true' && f.distortion_label)
+  const targets = facts.filter(f => !f.excluded && f.label === 'true' && f.distortion_label)
   if (targets.length === 0) return null
   const sum = targets.reduce((acc, f) => acc + (DISTORTION_WEIGHT[f.distortion_label] ?? 0), 0)
   return clamp01(sum / targets.length)
@@ -82,7 +83,7 @@ export function distortionScore(facts) {
 
 export function evidenceScore(facts) {
   if (!facts?.length) return null
-  const targets = facts.filter(f => f.label === 'true' && f.evidence_quality_label)
+  const targets = facts.filter(f => !f.excluded && f.label === 'true' && f.evidence_quality_label)
   if (targets.length === 0) return null
   const sum = targets.reduce((acc, f) => acc + (EVIDENCE_WEIGHT[f.evidence_quality_label] ?? 0), 0)
   return clamp01(sum / targets.length)

@@ -60,8 +60,10 @@ async function layerExtract(presentation, state) {
 }
 
 async function layerVerify(presentation, state) {
-  const facts = await ensureFacts(presentation, state)
-  if (facts.length === 0) throw new Error('No facts to verify (run extract first)')
+  const allFacts = await ensureFacts(presentation, state)
+  // Only process facts the user hasn't excluded.
+  const facts = allFacts.filter(f => !f.excluded)
+  if (facts.length === 0) throw new Error('No active facts to verify (all excluded or none extracted)')
   const BATCH = 20
   const labels = {}
   for (let i = 0; i < facts.length; i += BATCH) {
@@ -109,7 +111,7 @@ async function layerFallacies(presentation, state) {
 
 async function layerDistortion(presentation, state) {
   const facts = await ensureFacts(presentation, state)
-  const verified = facts.filter(f => f.label === 'true')
+  const verified = facts.filter(f => !f.excluded && f.label === 'true')
   if (verified.length === 0) return { total: 0, labels: {}, skipped: true }
   const BATCH = 15
   const labels = {}
@@ -136,7 +138,7 @@ async function layerDistortion(presentation, state) {
 
 async function layerEvidence(presentation, state) {
   const facts = await ensureFacts(presentation, state)
-  const verified = facts.filter(f => f.label === 'true')
+  const verified = facts.filter(f => !f.excluded && f.label === 'true')
   if (verified.length === 0) return { total: 0, labels: {}, skipped: true }
   const BATCH = 15
   const labels = {}
@@ -162,7 +164,8 @@ async function layerEvidence(presentation, state) {
 }
 
 async function layerConsistency(presentation, state) {
-  const facts = await ensureFacts(presentation, state)
+  const allFacts = await ensureFacts(presentation, state)
+  const facts = allFacts.filter(f => !f.excluded)
   if (facts.length === 0) return { count: 0, examples: [] }
   const { issues } = await callFn(CHECK_CONSISTENCY_URL, {
     transcript: presentation.transcript,
